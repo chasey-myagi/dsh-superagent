@@ -43,8 +43,12 @@ def stopped(profile):
     return (control(profile) / 'manually-stopped').exists()
 
 
-def serves(args, profile):
-    """Return whether command-line arguments belong to the main DSH service process for `profile`."""
+def serves(name, args, profile):
+    """Return whether a `ps` entry runs the main DSH service for `profile`.
+
+    Node 24 reports its main thread's name through `ucomm`, so `node` started by the `dsh` launcher shows as
+    `MainThread` rather than `node`. The program named by the command line identifies it in that case.
+    """
     words, matched, value = [], False, False
     for word in args[1:]:
         if value:
@@ -55,7 +59,8 @@ def serves(args, profile):
             matched = True
         elif not word.startswith('-'):
             words.append(word)
-    return matched and 'plugin' not in words
+    program = Path(args[0]).name if args else ''
+    return matched and 'plugin' not in words and (name in ('node', 'dsh') or program in ('node', 'dsh'))
 
 
 def ps(*options, check=False):
@@ -69,12 +74,12 @@ def ps(*options, check=False):
 
 def running(pid, profile):
     """Return whether `pid` is currently running the DSH service for `profile` (`ps -p` returns nothing once exited)."""
-    return any(found == pid and name in ('node', 'dsh') and serves(args, profile) for found, name, args in ps('-p', str(pid)))
+    return any(found == pid and serves(name, args, profile) for found, name, args in ps('-p', str(pid)))
 
 
 def processes(profile):
     """Return PIDs of all running DSH service processes for `profile`, including instances started outside this script and the recorded `service.pid` while still running."""
-    found = [pid for pid, name, args in ps('-ax', check=True) if name in ('node', 'dsh') and serves(args, profile)]
+    found = [pid for pid, name, args in ps('-ax', check=True) if serves(name, args, profile)]
     try:
         pid = int((control(profile) / 'service.pid').read_text())
     except (OSError, ValueError):
