@@ -106,14 +106,17 @@ export function triggerView(view: Snapshot, trigger: Trigger, threadDecisions?: 
         : undefined } }
 }
 export type TriggerView = ReturnType<typeof triggerView>
-/** Single-line summary of why a ticket in the `person` stage is waiting on human action (omitted once answered and back with the Executor). */
+/** Single-line summary of why a ticket in the `person` stage is waiting on human action (omitted once answered and back with the Executor); a multi-line report keeps its first and last line, where a failure states its cause. */
 function ticketNote(ticket: Ticket, stage: TicketStage): { text: string; error: boolean } | undefined {
   if (stage.stage !== 'person') return undefined
   if (stage.action === 'answer' && ticket.attention) return { text: preview(ticket.attention.question), error: false }
   if (stage.action === 'delivery' && ticket.delivery) return { text: preview(ticket.delivery.error), error: true }
   const summary = latestReport(ticket)?.summary
   if ((stage.action !== 'blocked' && stage.action !== 'failed') || !summary) return undefined
-  return { text: preview(summary.split('\n')[0]!), error: stage.action === 'failed' }
+  const lines = summary.split('\n').filter(line => line.trim())
+  if (!lines.length) return undefined
+  const last = lines.at(-1)!
+  return { text: preview(lines.length > 1 ? `${lines[0]} … ${last}` : last), error: stage.action === 'failed' }
 }
 export function ticketSummary(ticket: Ticket) {
   const stage = ticketStage(ticket)

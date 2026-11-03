@@ -133,6 +133,20 @@ it('follows the Ticket\'s stage: a blocked Ticket a person answered since is wor
   expect(ticketDetail(host, 't1')!.assignments[0]).not.toHaveProperty('turnEndedAt')
 })
 
+it('summarizes a multi-line failure note by its first and last line, where the cause is', () => {
+  const failed = { state: 'failed' as const, at: '2026-09-22T00:01:00Z',
+    summary: 'The prepare command failed (exit code 1):\nPreparing worktree (new branch \'agent/x\')\nfatal: no such clone' }
+  const ticket = { id: 't2', title: 'Fix', decisionId: 'd', channels: [], undelivered: [], createdAt: at, updatedAt: at,
+    mandate: { strength: 'explicit' as const, policyVersion: 'v', basis: { via: 'listed' as const }, actor: { source: 'feishu',
+      id: 'ou_alice' }, scope: '' },
+    origin: { triggerId: 'e2', triggerIds: ['e2'] }, assignments: [{ id: 'a2', state: 'running' as const, createdAt: at, startedAt: at,
+      report: failed }],
+    inputs: [] as { id: string; kind: 'trigger'; triggerId: string; at: string; human?: true }[] }
+  store.tickets.save(ticket)
+  expect(ticketSummary(store.tickets.get('t2')!).note)
+    .toEqual({ text: 'The prepare command failed (exit code 1): … fatal: no such clone', error: true })
+})
+
 it('does not show a follow-up that reached a ticket as waiting for an Eval, though an older version queued it', () => {
   const host = views()
   live('t1')
