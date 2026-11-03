@@ -10,7 +10,7 @@ import { renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 import { Runtime } from '../src/app/runtime.ts'
 import { jobRegistry } from './fixtures/host.ts'
 import { evalsHealth } from '../src/app/views/overview.ts'
-import { mandateInstructions } from '../src/executor/dsh.ts'
+import { mandateInstructions, prepareFailedMessage } from '../src/executor/dsh.ts'
 import { masterPrompt } from '../src/app/context.ts'
 import { reference, testMachine } from './fixtures/deployment.ts'
 import type { Machine } from '../src/deployment.ts'
@@ -1088,12 +1088,35 @@ it('runs the prepare command once for a new ticket, under the execution root wit
   await runtime.engine.retryTicket(ticket.id)
   await runtime.idle()
   expect(runs()).toHaveLength(1)
-  answers['sh -c exit 3'] = new Error('fatal: no such clone')
+  answers['sh -c exit 3'] = new Error('Preparing worktree (new branch \'agent/x\')\nfatal: no such clone')
   prepare('exit 3')
   const failed = await acceptedTicket(feishu('9', '@bot 修一下标题'))
   await runtime.idle()
-  expect(runtime.store.tickets.get(failed.ticket.id)!.assignments.at(-1)).toMatchObject({ report: expect.objectContaining({ state: 'failed', summary: expect.stringContaining('The prepare command failed: fatal: no such clone') }) })
+  const report = runtime.store.tickets.get(failed.ticket.id)!.assignments.at(-1)!.report!
+  expect(report).toMatchObject({ state: 'failed' })
+  // The exit code and the end of stderr reach the report, not just the failing command's first progress line.
+  expect(report.summary).toContain('The prepare command failed (exit code 1)')
+  expect(report.summary).toContain('fatal: no such clone')
+  // The ticket note keeps one line, so it names both the exit code and the cause.
+  const note = ticketList(viewsOf(runtime), 'person', 0, 20).items.find(item => item.id === failed.ticket.id)!.note!
+  expect(note).toMatchObject({ error: true })
+  expect(note.text).toContain('exit code 1')
+  expect(note.text).toContain('fatal: no such clone')
   expect(waitsForPerson(runtime.store.tickets.get(failed.ticket.id)!)).toBe(true)
+})
+
+it('bounds a failed prepare command\'s message to its exit code and the last lines of stderr', () => {
+  const lines = Array.from({ length: 25 }, (_, index) => `line ${index + 1}`)
+  expect(prepareFailedMessage(new CliError(lines.join('\n'), undefined, 128)))
+    .toBe(`The prepare command failed (exit code 128):\n…\n${lines.slice(5).join('\n')}`)
+  // A failure without an exit code, such as a timeout, still explains itself.
+  expect(prepareFailedMessage(new Error('The operation was aborted due to timeout')))
+    .toBe('The prepare command failed:\nThe operation was aborted due to timeout')
+  expect(prepareFailedMessage(new CliError('', undefined, 2))).toBe('The prepare command failed (exit code 2)')
+  // One long line keeps its end, where a command usually prints the cause.
+  const truncated = prepareFailedMessage(new CliError(`start ${'x'.repeat(5000)}`, undefined, 1))
+  expect(truncated).toMatch(/^The prepare command failed \(exit code 1\):\n…x+$/)
+  expect(truncated.length).toBeLessThan(4100)
 })
 
 it('counts a ticket whose directory the host prepared before prepare commands existed as prepared', async () => {

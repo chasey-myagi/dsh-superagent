@@ -8,6 +8,7 @@ import { key, latestAssignment, latestReport, liveTicket, runningAssignment, thr
 import type { AssessmentOutcome, Assignment, EngineForExecutor, Execution, Executor, Mandate, PolicyEffect, Ticket, TicketInput, Trigger }
   from '../core/index.ts'
 import type { Machine } from '../deployment.ts'
+import { CliError } from '../infra/commands.ts'
 import { runAsWorker, verifyDirectory } from '../infra/environment.ts'
 import type { Settings } from '../policy.ts'
 import type { Store } from '../app/store.ts'
@@ -26,6 +27,8 @@ export const workerSessionId = (ticketId: string): string => `worker-${ticketId}
 export const ticketOfSession = (sessionId: string): string | undefined => sessionId.startsWith('worker-') ? sessionId.slice('worker-'.length) : undefined
 /** Maximum runtime for a workspace prepare command. */
 const PREPARE_TIMEOUT_MS = 10 * 60_000
+/** Lines and characters of a failed prepare command's stderr kept in the ticket's failure report; its opening lines usually only describe progress. */
+const PREPARE_STDERR_LINES = 20, PREPARE_STDERR_CHARS = 4000
 /** Maximum transient retry attempts for a launch or worker turn, and the initial backoff before resuming a turn. */
 const TRANSIENT_TRIES = 3, TRANSIENT_BACKOFF_MS = 15_000
 /** How long a worker's background work may run on after its turn ended before it is stopped and the worker reported waiting. */
@@ -41,6 +44,22 @@ const fromPerson = (input?: TicketInput): boolean => input?.kind === 'trigger' ?
  * DshExecutor catches it to mark the ticket failed immediately rather than retrying automatically, because an existing directory counts as prepared and an automatic retry would treat whatever a failed prepare command left behind in the directory as a prepared workspace.
  */
 class PrepareFailed extends Error {}
+/**
+ * Formats a failed prepare command for its ticket's failure report: the command's exit code and the end of its stderr,
+ * because the first stderr lines usually only describe progress and the cause appears last. The kept output is bounded in lines and characters.
+ */
+export function prepareFailedMessage(error: unknown): string {
+  const exitCode = error instanceof CliError ? error.exitCode : undefined
+  const heading = `The prepare command failed${exitCode === undefined ? '' : ` (exit code ${exitCode})`}`
+  const output = (error instanceof Error ? error.message : String(error)).trim()
+  if (!output) return heading
+  const lines = output.split('\n')
+  const tail = lines.slice(-PREPARE_STDERR_LINES)
+  let detail = tail.join('\n')
+  if (detail.length > PREPARE_STDERR_CHARS) detail = `…${detail.slice(detail.length - PREPARE_STDERR_CHARS)}`
+  else if (tail.length < lines.length) detail = `…\n${detail}`
+  return `${heading}:\n${detail}`
+}
 const PASSING = new RegExp(['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EAI_AGAIN', 'ENOTFOUND', 'EPIPE', 'UND_ERR', 'socket hang up', 'fetch failed',
   'network error', 'overloaded', 'rate limit', '\\b(?:408|429|50[0-4])\\b'].join('|'), 'i')
 /**
@@ -255,7 +274,7 @@ export class DshExecutor implements Executor {
       .catch(async (error: unknown) => {
         // Remove an empty directory left by a failed prepare command so a later retry does not treat it as already prepared.
         await rmdir(directory).catch(() => { /* Absent, or holding what the command wrote, which the output explains. */ })
-        throw new PrepareFailed(`The prepare command failed: ${error instanceof Error ? error.message : String(error)}`)
+        throw new PrepareFailed(prepareFailedMessage(error))
       })
     await mkdir(directory, { recursive: true })
     await verifyDirectory(directory, this.host.context.subprocess, this.host.lifetime)
