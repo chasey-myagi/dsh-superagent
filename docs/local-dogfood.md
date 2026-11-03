@@ -47,6 +47,20 @@ curl -s -H 'x-orchestrator-request: 1' http://127.0.0.1:3082/orchestrator/api/st
 
 `status` 里 `manually_stopped: true` 时，自动恢复会保持停止，手动 `start` 即可恢复。`start` 超时的输出会带最新日志尾部，也可直接看 `.artifacts/dsh-superagent-superagent-*.log`。
 
+## Recall gate（派单前先 recall）
+
+主 Session（router）在 profile 注册了 dsh-memory 的 `recall_facts` 时受 gate 约束：每次派单（`orchestrator_route` 或 `orchestrator_eval_decide` 里带 `"accept"`）前要先 `recall_facts`。没先 recall 时，接受会被拒绝一次并提示先 recall、再用同一调用重试；重试直接放行，所以最多拒绝一次，不会卡住派单（`recall_facts` 报错或 memory 被禁用时也是重试放行）。`DSH_MEMORY_DISABLE` 或工具没注册时没有 gate。实现见 `src/app/sessions.ts` 的 `recallGate()`，用例在 `tests/recall-gate.spec.ts`。
+
+派单的 recall 用量看 trace 指标（管理 API 要带 `x-orchestrator-request: 1`，host 用 `127.0.0.1:3082`）：
+
+```sh
+curl -s -H 'x-orchestrator-request: 1' http://127.0.0.1:3082/orchestrator/api/metrics | jq '.recall'
+# {"dispatched":12,"used":9,"rate":0.75}
+```
+
+- `dispatched`：有 dispatch 记录的工单数；`used`：其中派单前 recall 过的工单数；`rate = used / dispatched`（最多 4 位小数），没有派单时为 0。
+- 一次 `orchestrator_route` 批量接受多张工单时，派单前 recall 一次即可，这批工单都记为已 recall。
+
 面板：http://127.0.0.1:3082 → 侧栏 Superagent。
 
 ## 可观测端点速查
