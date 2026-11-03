@@ -51,7 +51,7 @@ afterEach(() => {
 function runWith(extra: Record<string, string>, ...args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise(resolve => execFile('python3', [join(root, 'scripts', 'dsh-superagent'), ...args],
     { env: { ...process.env, PATH: `${join(root, 'bin')}:${process.env.PATH}`, DSH_SUPERAGENT_PROFILE: '', DSH_SUPERAGENT_URL: '',
-      DSH_SUPERAGENT_START_TIMEOUT: '', ...extra }, timeout: 20_000 },
+      DSH_SUPERAGENT_START_TIMEOUT: '', DSH_SUPERAGENT_ENV_FILE: '', ...extra }, timeout: 20_000 },
     (error, stdout, stderr) => resolve({ code: typeof error?.code === 'number' ? error.code : 0, stdout, stderr })))
 }
 function run(...args: string[]) {
