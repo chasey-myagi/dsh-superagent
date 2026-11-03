@@ -32,3 +32,11 @@
 - Recall relative cutoff (memory-explore #7, MEMSERVER_MIN_REL_SCORE=0.5): P@5 0.5125 → 0.9125. R@5 and MRR stay at 1.0. CI gate raised from 0.50 to 0.85. Sweep: 0.3=.77 0.4=.86 0.5=.91 0.6=.975 0.7=.975 (R@5 drops to .975).
 - D14 (from /v1/metrics): distill failed 2 of 3 times with `Unterminated string` because the LLM's JSON output was truncated. Session had 530 events and 151k input tokens. Each failure costs ~24s, and a whole round of tokens is wasted before the retry succeeds. Next: chunk distill by event window, or raise max_tokens and repair truncated JSON.
 - D15 (from /v1/metrics and the ticket metrics): recall p50 is 3.9s, all LLM plan generation (heuristic mode takes ~1ms). The router made 0 recall_facts calls on round-2 tickets #7–#9. Also, superagent metrics show `assignment.samples=0` even though tickets have assignments=1, so the assignment stage isn't recorded in the trace. Next: cache recall plans or use a heuristic-first plan; add the assignment trace point.
+
+## Round 3 (2026-11-04)
+- D14 distill 分块（memory-explore #8）：≤40 事件/16k 字符分块、max_tokens 8000、JSON 修复、只重试失败块。前：5 job 中 2 个失败（530 事件会话 JSON 截断）；后：3/3 成功，tokens 142k in / 85k out；累计 chunk_count 36、chunk_retries 1。
+- D15a recall heuristic-first + LRU/TTL 计划缓存（memory-explore #9）：p50 3883ms → 0.32ms，p95 1.3ms（72 次；heuristic 62 / llm 7 / fallback 3；缓存命中 3/9）。eval P@5 0.9125、R@5 1.0 不变。
+- D15b router 派单前召回 + dispatch trace（fork #9）。根因 1：router 工具 allowlist 不含 recall_facts（fork #11）；根因 2：prompt 被忽略 → recall gate（fork #12）。router 召回率 0/4 → 新单 2/2。
+- D16（open）：真实查询 heuristic 可返回多达 20 条事实，精度需再评估。
+- D17（open）：/v1/metrics?since=<ISO Z> 召回计数为 0，疑似 since 过滤 bug。
+- D18（open）：worker #18 改了主 checkout /workspace/memory-explore（不在自己的 worktree），导致 land 冲突；补丁存于 /tmp/t18-stray.patch。
