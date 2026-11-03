@@ -26,3 +26,9 @@
 - D12: `stop` doesn't kill the tmux session; the old orchestrator kept running and blocked start. Worked around with `tmux kill-session -t dsh-superagent`.
 - D13: after restart, `start` reported "startup failed", but the service answers on :3082 and /orchestrator/api/metrics returns the new schema. Process detection probably disagrees with the health check. Next ticket.
 - Trace starts empty after the restart (tickets.total=0). Older tickets were never recorded.
+
+## 2026-11-04 Round 2
+- T7–T9 (D12/D13/D9): one root cause. On Node 24, `ps ucomm` reports `MainThread`, so process detection missed the service. Merged fork #6 (covers #7 and #8) and #7 (D9 test isolation). Measured: stop ends the tmux session; start exits 0 in about 10s (it used to falsely report failure after ~180s). 1212 tests pass with and without DSH_SUPERAGENT_ENV_FILE. #7's worker branch was dropped because it duplicated #8 and conflicted.
+- Recall relative cutoff (memory-explore #7, MEMSERVER_MIN_REL_SCORE=0.5): P@5 0.5125 → 0.9125. R@5 and MRR stay at 1.0. CI gate raised from 0.50 to 0.85. Sweep: 0.3=.77 0.4=.86 0.5=.91 0.6=.975 0.7=.975 (R@5 drops to .975).
+- D14 (from /v1/metrics): distill failed 2 of 3 times with `Unterminated string` because the LLM's JSON output was truncated. Session had 530 events and 151k input tokens. Each failure costs ~24s, and a whole round of tokens is wasted before the retry succeeds. Next: chunk distill by event window, or raise max_tokens and repair truncated JSON.
+- D15 (from /v1/metrics and the ticket metrics): recall p50 is 3.9s, all LLM plan generation (heuristic mode takes ~1ms). The router made 0 recall_facts calls on round-2 tickets #7–#9. Also, superagent metrics show `assignment.samples=0` even though tickets have assignments=1, so the assignment stage isn't recorded in the trace. Next: cache recall plans or use a heuristic-first plan; add the assignment trace point.
