@@ -62,6 +62,25 @@ const WORK_TOOLS = ['read', 'write', 'edit', 'read_image', 'glob', 'grep', 'bash
   'web_fetch', 'skill', 'todo_write', 'subagent', 'list_subagent_models', 'send_message', 'list_agents', 'interrupt_agent']
 /** Read-only memory tools (dsh-memory) both Session kinds keep when the profile registers them, so routing and work can recall earlier tickets. */
 const MEMORY_TOOLS = ['recall_facts', 'get_evidence']
+/** What the main Session is told when it accepts work without recalling first; refused once per dispatch, so recall never blocks routing. */
+const RECALL_FIRST = 'Call recall_facts for this request\'s key terms before accepting it, then retry the same call. '
+  + 'If recall_facts errors or memory is disabled, retry the call directly.'
+const ACCEPTS = new Set(['orchestrator_route', 'orchestrator_eval_decide'])
+
+/**
+ * The main Session's recall gate: with memory tools present, the first accepting dispatch after the previous one is refused
+ * until `recall_facts` runs; a retry passes either way.
+ */
+export function recallGate(): (execution: { name: string; arguments: unknown }) => string | undefined {
+  let recalled = false, refused = false
+  return ({ name, arguments: input }) => {
+    if (name === 'recall_facts') { recalled = true; return undefined }
+    if (!ACCEPTS.has(name) || !JSON.stringify(input ?? {}).includes('"accept"')) return undefined
+    if (!recalled && !refused) { refused = true; return RECALL_FIRST }
+    recalled = false; refused = false
+    return undefined
+  }
+}
 /** What the main Session is told when it would wait: what it waits for comes to it, and a waiting step holds back the next. */
 const NO_WAIT = 'Reports, follow_up notices, new candidates and a background job\'s end with its output arrive by themselves as messages; '
   + 'end the turn instead of waiting for them.'
@@ -265,6 +284,10 @@ export class Sessions {
       const memory = MEMORY_TOOLS.filter(name => agent.ctx.tools.get(name, scopeParentOf(agent)))
       binding.disposers.push(agent.ctx.tools.restrict({ allow: ['skill', 'bash', 'read', 'read_image', 'job_output', 'job_list', 'job_kill', ...memory] }),
         agent.ctx.tools.guard(execution => noWait(execution, () => this.routed(agent))))
+      if (memory.includes('recall_facts')) {
+        const gate = recallGate()
+        binding.disposers.push(agent.ctx.tools.guard(execution => gate(execution)))
+      }
     } else {
       // An Executor Session keeps the profile's work tools it has, which DSH requires to be known; its own tools are not masked.
       binding.disposers.push(...this.workOnly(agent, ticket!.id))

@@ -436,6 +436,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/migration.spec.ts` | The schema 11 migration: every stored record in its current shape, and the refusal of older schemas |
 | `tests/store.spec.ts` | Repositories and their working sets, in SQLite as in memory, the kv area, with every key of `KV` spelled only in `src/kv.ts` and the migration, settings history and queries |
 | `tests/prompts.spec.ts` | Prompt validation, assembly and versions |
+| `tests/recall-gate.spec.ts` | The main Session refuses its first accept until `recall_facts` runs |
 | `tests/cards.spec.ts` | The rules the built-in text must state, file by file |
 | `tests/model-surface.spec.ts` | Everything models read: tools, prompts, skills and inputs, checked against the tool schemas, the execution environment and the glossary, within a size budget per role |
 | `tests/deployment.spec.ts`, `tests/environment.spec.ts`, `tests/index.spec.ts` | The plugin configuration and setup, the agent's process environment, the plugin entry |
