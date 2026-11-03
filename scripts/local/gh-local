@@ -1,0 +1,102 @@
+#!/usr/bin/env python3
+"""gh-local: 本地 GitHub 仿真，供 dsh-superagent 在没有 GitHub 凭据时用本地工单跑通。
+实现 dsh-superagent 用到的 `gh api` 子集（user / repo / notifications / issues / comments），数据存在 $GH_LOCAL_HOME/db.json。
+运营者命令：gh-local new <标题> <正文> [--target memory-explore|dsh-superagent]；gh-local comment <N> <正文>；gh-local show <N>；gh-local list
+"""
+import json, os, sys, time, fcntl, re
+from datetime import datetime, timezone
+HOME = os.environ.get('GH_LOCAL_HOME', os.path.expanduser('~/.superagent-local'))
+REPO = os.environ.get('GH_LOCAL_REPO', 'local/dsh-superagent-ws')
+AGENT = os.environ.get('GH_LOCAL_AGENT', 'grokbot-agent')
+OPERATOR = os.environ.get('GH_LOCAL_OPERATOR', 'chasey-myagi')
+DB = os.path.join(HOME, 'db.json')
+now = lambda: datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+def die(msg, code=404):
+    sys.stderr.write(f'gh: {msg} (HTTP {code})\n'); sys.exit(1)
+class Store:
+    def __enter__(self):
+        os.makedirs(HOME, exist_ok=True)
+        self.f = open(DB + '.lock', 'w'); fcntl.flock(self.f, fcntl.LOCK_EX)
+        self.d = json.load(open(DB)) if os.path.exists(DB) else {'next': 1, 'cid': 1000, 'issues': {}}
+        return self.d
+    def __exit__(self, *a):
+        tmp = DB + '.tmp'; json.dump(self.d, open(tmp, 'w'), ensure_ascii=False, indent=1); os.replace(tmp, DB)
+def user(login): return {'login': login, 'id': 1 if login == AGENT else 2, 'type': 'User'}
+def html(n, cid=None): return f'https://github.com/{REPO}/issues/{n}' + (f'#issuecomment-{cid}' if cid else '')
+def issue_view(i): return {k: i[k] for k in ('number', 'title', 'body', 'state', 'created_at', 'updated_at')} | {
+    'id': i['number'], 'user': user(i['user']), 'html_url': html(i['number']), 'pull_request': None, 'target': i.get('target'), 'labels': []}
+def comment_view(n, c): return {'id': c['id'], 'body': c['body'], 'user': user(c['user']), 'created_at': c['at'], 'updated_at': c['at'],
+    'html_url': html(n, c['id']), 'issue_url': f'https://api.github.com/repos/{REPO}/issues/{n}'}
+def out(v, include=False, paginate=False):
+    if paginate: v = [v]
+    if include: sys.stdout.write('HTTP/2.0 200 OK\r\nX-Poll-Interval: 60\r\n\r\n')
+    sys.stdout.write(json.dumps(v, ensure_ascii=False)); sys.exit(0)
+def api(args):
+    path = args[0].lstrip('/'); rest = args[1:]
+    include = '--include' in rest or '-i' in rest; paginate = '--paginate' in rest
+    method = rest[rest.index('--method') + 1] if '--method' in rest else ('POST' if '-f' in rest else 'GET')
+    fields = dict(rest[i + 1].split('=', 1) for i, a in enumerate(rest) if a in ('-f', '-F', '--raw-field'))
+    jq = rest[rest.index('--jq') + 1] if '--jq' in rest else None
+    p, _, q = path.partition('?'); qs = dict(x.split('=', 1) for x in q.split('&') if '=' in x)
+    since = qs.get('since', '').replace('%3A', ':')
+    if p == 'user': out(user(AGENT))
+    m = re.fullmatch(r'repos/([^/]+/[^/]+)(?:/(.*))?', p)
+    if not m: die('Not Found')
+    if m.group(1).lower() != REPO.lower(): die('Not Found')
+    sub = m.group(2) or ''
+    with Store() as d:
+        iss = d['issues']
+        if sub == '':
+            if jq: out({'name': REPO, 'push': True})
+            out({'full_name': REPO, 'default_branch': 'main', 'permissions': {'push': True}})
+        if sub == 'notifications':
+            ns = [{'id': str(i['number']), 'repository': {'full_name': REPO}, 'updated_at': i['updated_at'],
+                   'subject': {'url': f'https://api.github.com/repos/{REPO}/issues/{i["number"]}', 'type': 'Issue', 'title': i['title']}}
+                  for i in iss.values() if not since or i['updated_at'] >= since]
+            out(ns, include, paginate)
+        mi = re.fullmatch(r'issues/(\d+)(/comments)?', sub)
+        if mi:
+            i = iss.get(mi.group(1)) or die('Not Found')
+            if not mi.group(2): out(issue_view(i))
+            n = i['number']
+            if method == 'POST':
+                c = {'id': d['cid'], 'user': AGENT, 'body': fields.get('body', ''), 'at': now()}; d['cid'] += 1
+                i['comments'].append(c)  # 代理自己的评论不更新 updated_at，避免自激
+                with open(os.path.join(HOME, 'replies.log'), 'a') as f: f.write(f'--- #{n} {c["at"]}\n{c["body"]}\n')
+                out(comment_view(n, c))
+            out([comment_view(n, c) for c in i['comments'] if not since or c['at'] >= since], include, paginate)
+        if re.fullmatch(r'issues(/comments)?|pulls(/comments)?', sub): out([], include, paginate)
+        if sub.startswith('commits/'): out({'sha': '0' * 40})
+        if re.search(r'check-runs|status', sub): out({'check_runs': [], 'statuses': [], 'state': 'pending'})
+    die('Not Found')
+def main(a):
+    if not a: print(__doc__); return
+    if a[0] == 'api': api(a[1:])
+    if a[0] == 'auth':
+        if a[1:2] == ['status']: print(f'Logged in to github.com (local) as {AGENT}'); return
+        sys.exit(1)  # git-credential 等：本地不提供凭据
+    if a[0] == 'new':
+        target = a[a.index('--target') + 1] if '--target' in a else 'memory-explore'
+        pos = [x for j, x in enumerate(a[1:], 1) if x != '--target' and a[j - 1] != '--target']
+        title, body = pos[0], (pos[1] if len(pos) > 1 else '')
+        with Store() as d:
+            n = d['next']; d['next'] += 1; t = now()
+            d['issues'][str(n)] = {'number': n, 'title': title, 'body': f'@{AGENT} {body}\n\n目标仓库：/workspace/dsh-superagent-ws/{target}',
+                'state': 'open', 'user': OPERATOR, 'created_at': t, 'updated_at': t, 'comments': [], 'target': target}
+        print(f'#{n} {html(n)}'); return
+    if a[0] == 'comment':
+        with Store() as d:
+            i = d['issues'][a[1]]; t = now()
+            i['comments'].append({'id': d['cid'], 'user': OPERATOR, 'body': f'@{AGENT} {a[2]}', 'at': t}); d['cid'] += 1; i['updated_at'] = t
+        print('ok'); return
+    if a[0] in ('show', 'list', 'target'):
+        with Store() as d:
+            if a[0] == 'target': print(d['issues'][a[1]].get('target', 'memory-explore')); return
+            for i in d['issues'].values():
+                if a[0] == 'list': print(f"#{i['number']} [{i['target']}] {i['title']} ({len(i['comments'])} 条评论)")
+                elif str(i['number']) == a[1]:
+                    print(f"#{i['number']} {i['title']}\n{i['body']}\n")
+                    for c in i['comments']: print(f"--- {c['user']} {c['at']}\n{c['body']}\n")
+        return
+    die('unsupported in gh-local: ' + ' '.join(a[:3]), 400)
+main(sys.argv[1:])
