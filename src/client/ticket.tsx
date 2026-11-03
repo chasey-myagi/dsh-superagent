@@ -1,6 +1,6 @@
 /** Ticket detail page: stage and actions, Mandate details, undelivered/delivered Inputs, subscribed Threads, and Assignments. */
 import { useState, type ReactNode } from 'react'
-import { ApiError, usePoll, type TicketPageView } from './api.ts'
+import { ApiError, usePoll, type TicketPageView, type TraceEvent } from './api.ts'
 import { DisclosureRow, Dot, Icon, Tag, type IconName } from './controls.tsx'
 import { decisionMark, reportDot, ticketMark } from './marks.ts'
 import { usePanel } from './provider.tsx'
@@ -65,6 +65,25 @@ function Assignments({ ticket }: { ticket: TicketPageView }) {
       sessionId={item.ref} /></div>}
   </li>)}</ul>
 }
+function traceSummary(event: TraceEvent): string {
+  const value = (key: string) => { const item = event[key]; return typeof item === 'string' || typeof item === 'number' ? String(item) : '' }
+  const model = [value('provider'), value('model')].filter(item => item && item !== 'unknown').join('/')
+  const tokens = event.input_tokens !== undefined || event.output_tokens !== undefined
+    ? `${value('input_tokens') || '0'}→${value('output_tokens') || '0'}` : ''
+  return [model, value('name'), tokens, value('latency_ms') && `${value('latency_ms')} ms`, value('status'), value('message_kind'),
+    value('reason'), value('error')].filter(Boolean).join(' · ')
+}
+function Timeline({ events }: { events: TraceEvent[] }) {
+  const { t } = usePanel()
+  return <Section title={t('ticketTimeline')} count={events.length} icon="history">
+    <ul className="dt-list">{events.slice().reverse().map((event, index) => <li key={`${event.ts}:${event.kind}:${index}`} className="dt-row">
+      <div className="dt-row-main">
+        <div className="dt-row-title">{valueLabel(t, 'trace', event.kind)}</div>
+        <div className="dt-row-meta">{traceSummary(event) && <span>{traceSummary(event)}</span>}<When at={event.ts} /></div>
+      </div>
+    </li>)}</ul>
+  </Section>
+}
 function MandateDetails({ ticket, actor }: { ticket: TicketPageView; actor: string }) {
   const { t, navigate } = usePanel()
   const { mandate, decision } = ticket
@@ -108,6 +127,7 @@ function MandateDetails({ ticket, actor }: { ticket: TicketPageView; actor: stri
 export function TicketPage({ id }: { id: string }) {
   const { t, call } = usePanel()
   const { data, error, reload } = usePoll(() => call('GET tickets/:id', { id }), [id])
+  const timeline = usePoll(() => call('GET tickets/:id/timeline', { id }), [id])
   const after = async (request: Promise<unknown>) => { await request; await reload() }
   if (!data) return <><PageHead
     title={t('term.ticket')} />{error instanceof ApiError && error.missing ? <Hint>{t('ticketNotFound')}</Hint> : <LoadState
@@ -153,6 +173,7 @@ export function TicketPage({ id }: { id: string }) {
     {data.deliveryError && <p className="dt-banner dt-danger dt-mono">
       <span className="dt-banner-label">{t('deliveryFailedPrefix')}</span>{data.deliveryError}
     </p>}
+    {timeline.data && timeline.data.events.length > 0 && <Timeline events={timeline.data.events} />}
     <MandateDetails ticket={data} actor={actor} />
     {undelivered.length > 0 && <Section title={t('undeliveredInputs')} count={undelivered.length}>
       <Hint>{data.deliveryError ? t('inputRetryHint') : data.paused ? t('inputPausedHint') : t('inputWaitingHint')}</Hint>
