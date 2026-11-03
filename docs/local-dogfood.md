@@ -49,6 +49,28 @@ curl -s -H 'x-orchestrator-request: 1' http://127.0.0.1:3082/orchestrator/api/st
 
 面板：http://127.0.0.1:3082 → 侧栏 Superagent。
 
+## 可观测端点速查
+
+Superagent 管理 API（只监听本机；直接访问要带 `x-orchestrator-request: 1`，面板会自动带，缺了返回 403）：
+
+| 端点 | 内容 |
+| --- | --- |
+| `GET http://127.0.0.1:3082/orchestrator/api/metrics` | 工单数、admission/assignment/total 阶段耗时 p50/p95、recall 派发与使用率、token 与估算成本 |
+| `GET http://127.0.0.1:3082/orchestrator/api/tickets/<id>/timeline?limit=200` | 单工单时间线（`tool.call`、`model.call` 等事件；`limit` 默认 200，最大 1000） |
+
+memserver（`memory-explore`，端口 8787）：
+
+| 端点 | 内容 |
+| --- | --- |
+| `GET http://127.0.0.1:8787/v1/metrics?since=` | 按 kind 计数与 p50/p95、召回命中率、蒸馏 token/失败数；`since` 用 ISO 8601 或 Unix 秒 |
+| `GET http://127.0.0.1:8787/dash?since=` | 同样的汇总加最近 50 条 trace 的单页 HTML dashboard |
+
+```sh
+curl -s -H 'x-orchestrator-request: 1' http://127.0.0.1:3082/orchestrator/api/metrics | jq .
+curl -s -H 'x-orchestrator-request: 1' http://127.0.0.1:3082/orchestrator/api/tickets/<id>/timeline | jq .
+curl -s "http://127.0.0.1:8787/v1/metrics?since=$(date -u -d '1 hour ago' +%FT%TZ)" | jq .
+```
+
 本地工单源 `scripts/local/gh-local`（模拟 gh，数据在 `~/.superagent-local/db.json`）：
 ```sh
 gh-local new "<标题>" "<正文>" --target memory-explore|dsh-superagent
