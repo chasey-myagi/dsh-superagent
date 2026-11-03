@@ -22,10 +22,13 @@ export interface TraceModelMetrics {
   output_tokens: number
   estimated_cost_usd: number
 }
-/** Ticket counts, stage latencies, token usage, and estimated model cost aggregated from the trace file. */
+/** Whether dispatched tickets called the memory tool before dispatch: `used` of `dispatched`, as a 0..1 `rate`. */
+export interface TraceRecallMetrics { dispatched: number; used: number; rate: number }
+/** Ticket counts, stage latencies, recall use, token usage, and estimated model cost aggregated from the trace file. */
 export interface TraceMetricsView {
   tickets: { total: number; ended: number; open: number }
   stages: { admission: TraceStageMetrics; assignment: TraceStageMetrics; total: TraceStageMetrics }
+  recall: TraceRecallMetrics
   tokens: { input: number; output: number; total: number }
   models: TraceModelMetrics[]
   pricing: { currency: 'USD'; unit: 'per 1M tokens'; default: ModelPrice; models: Record<string, ModelPrice> }

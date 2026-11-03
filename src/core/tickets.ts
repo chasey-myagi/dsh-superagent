@@ -354,8 +354,12 @@ export class Tickets extends EnginePart {
     // An end dated earlier, such as a PR's merge, does not move the ticket's last change back.
     ticket.ended = { at, by, outcome, ...why }; ticket.undelivered = []; ticket.updatedAt = this.now()
     delete ticket.attention; delete ticket.delivery
-    // The Assignments the end stops end with it; the ticket's end says why.
-    for (const assignment of stopping) { assignment.state = 'ended'; assignment.endedAt = at }
+    // The Assignments the end stops end with it; the ticket's end says why. Report each one before `ticket.ended` so the
+    // trace sees the worker's end and its stage has a completed sample.
+    for (const assignment of stopping) {
+      assignment.state = 'ended'; assignment.endedAt = at
+      this.emit('assignment.ended', { ticketId, assignmentId: assignment.id, reason: reason ?? outcome })
+    }
     this.repo.tickets.save(ticket)
     this.letGo(ticketId, waiting, left)
     this.emit('ticket.ended', { ticketId, by, outcome, ...why })
