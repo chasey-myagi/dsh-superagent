@@ -32,6 +32,7 @@ def out(v, include=False, paginate=False):
     if include: sys.stdout.write('HTTP/2.0 200 OK\r\nX-Poll-Interval: 60\r\n\r\n')
     sys.stdout.write(json.dumps(v, ensure_ascii=False)); sys.exit(0)
 def api(args):
+    open(os.path.join(HOME,'calls.log'),'a').write(now()+' '+' '.join(args)+'\n')
     path = args[0].lstrip('/'); rest = args[1:]
     include = '--include' in rest or '-i' in rest; paginate = '--paginate' in rest
     method = rest[rest.index('--method') + 1] if '--method' in rest else ('POST' if '-f' in rest else 'GET')
