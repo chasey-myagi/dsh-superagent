@@ -71,7 +71,7 @@ Send one message, under 300 words: what will be installed, the accounts and CLIs
 
 ## 5. Verify and hand over
 
-`scripts/dsh-superagent status` exits 0 with no setup problem. If you run in the operator's own DSH profile, create the hourly check of the Hourly check section of `docs/006-deployment.md` with your schedule tool; otherwise give the operator its prompt to schedule there. Then send one message, under 300 words:
+`scripts/dsh-superagent status` exits 0 with no setup problem; 1 means down, 2 a component error, and 3 setup or a `start` that is still running, as the **Start and stop** section of [docs/006-deployment.md](docs/006-deployment.md) describes. If you run in the operator's own DSH profile, create the hourly check of the Hourly check section of `docs/006-deployment.md` with your schedule tool; otherwise give the operator its prompt to schedule there. Then send one message, under 300 words:
 
 - The panel URL, and that the **Superagent** entry in the sidebar is where to look.
 - How to try it: from an account on the allowed list, comment `@<agent login> <request>` on an issue in the repository. A Ticket appears on the overview within about a minute.
