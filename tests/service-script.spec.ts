@@ -20,7 +20,8 @@ function sleeper(ignoreInterrupt = false): number {
   sleepers.push(child)
   return child.pid!
 }
-const service = (pid: number, profile = 'superagent') => `${pid} node node /opt/my tools/dsh --profile ${profile} --no-open`
+const service = (pid: number, profile = 'superagent', commandName = 'node') =>
+  `${pid} ${commandName} node /opt/my tools/dsh --profile ${profile} --no-open`
 /** Write active process lines (`pid ucomm args`) for the fake ps binary. Entries prefixed with `after:<pid> ` appear only after that PID exits. */
 const processes = (...lines: string[]) => writeFileSync(join(root, 'ps.txt'), lines.map(line => `${line}\n`).join(''))
 const started = (...lines: string[]) => writeFileSync(join(root, 'ps-started.txt'), lines.map(line => `${line}\n`).join(''))
@@ -112,6 +113,28 @@ it('waits only for the process it stopped', async () => {
   // Another instance shows up once the stopped one ended.
   processes(service(pid), `after:${pid} ${sleeper()} node node /opt/dsh --profile superagent`)
   expect(await run('stop', '--stop-timeout', '5')).toMatchObject({ code: 0, stdout: expect.stringContaining('dsh-superagent stopped') })
+}, 20_000)
+it('finds the service when Node reports its main thread name instead of `node`', async () => {
+  // Node 24 names its main thread, so `ps -o ucomm=` can show `MainThread` for the DSH process.
+  const url = await answering()
+  const pid = sleeper()
+  writeFileSync(join(root, 'pane'), `${pid}\n`)
+  started(service(pid, 'superagent', 'MainThread'))
+  const start = await run('start', '--url', url, '--timeout', '10')
+  expect(start).toMatchObject({ code: 0, stdout: expect.stringContaining(`"pids": [\n    ${pid}\n  ]`) })
+  expect(start.stderr).not.toContain('startup failed')
+  expect(readFileSync(join(control('superagent'), 'service.pid'), 'utf8')).toBe(`${pid}\n`)
+  const checked = await run('status', '--url', url)
+  expect(checked).toMatchObject({ code: 0 })
+  expect(JSON.parse(checked.stdout)).toMatchObject({ pids: [pid] })
+}, 20_000)
+it('reports a still-running service whose process name is the Node thread name as starting, not as failed', async () => {
+  const pid = sleeper()
+  processes(service(pid, 'superagent', 'MainThread'))
+  const timedOut = await run('start', '--url', 'http://127.0.0.1:9', '--timeout', '1')
+  expect(timedOut).toMatchObject({ code: 3, stderr: expect.stringContaining('still starting') })
+  expect(timedOut.stderr).not.toContain('startup failed')
+  expect(() => process.kill(pid, 0)).not.toThrow()
 }, 20_000)
 it('keeps only the newest logs it wrote for the profile', async () => {
   const url = await answering()
