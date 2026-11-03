@@ -266,6 +266,7 @@ function initial(): PanelServer {
     metrics: { tickets: { total: 2, ended: 1, open: 1 },
       stages: { admission: { samples: 1, p50_ms: 1000, p95_ms: 1000 }, assignment: { samples: 1, p50_ms: 2000, p95_ms: 2000 },
         total: { samples: 1, p50_ms: 5000, p95_ms: 5000 } },
+      recall: { dispatched: 2, used: 1, rate: 0.5 },
       tokens: { input: 10, output: 5, total: 15 },
       models: [{ provider: 'deepseek', model: 'demo', calls: 1, input_tokens: 10, output_tokens: 5, estimated_cost_usd: 0.000005 }],
       pricing: { currency: 'USD', unit: 'per 1M tokens', default: { input: 0.28, output: 0.42 },

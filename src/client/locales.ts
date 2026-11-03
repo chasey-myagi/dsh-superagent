@@ -308,6 +308,7 @@ const TEXT = {
   ticketNotFound: ['找不到这个工单。', 'Ticket not found.'],
   ticketTimeline: ['工单时间线', 'Ticket timeline'],
   'trace.admission': ['接单', 'Admission'],
+  'trace.dispatch': ['派单', 'Dispatch'],
   'trace.resume': ['续做', 'Resume'],
   'trace.worker.started': ['执行器启动', 'Worker started'],
   'trace.worker.ended': ['执行器结束', 'Worker ended'],

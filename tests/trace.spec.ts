@@ -36,9 +36,10 @@ it('projects ticket lifecycle domain events and reply delivery outcomes', () => 
   trace.delivery(receipt('t1'), 'sent')
   trace.delivery(receipt('t1'), 'channelIgnored')
   trace.delivery(receipt(), 'sent')
-  expect(lines(trace).map(line => [line.kind, line.session_id])).toEqual([['admission', 'master'], ['resume', 'master'],
-    ['worker.started', 'worker-t1'], ['worker.ended', 'worker-t1'], ['ticket.ended', 'master'], ['reply.delivered', 'outbox'],
-    ['reply.dropped', 'outbox']])
+  expect(lines(trace).map(line => [line.kind, line.session_id])).toEqual([['admission', 'master'], ['dispatch', 'master'],
+    ['resume', 'master'], ['worker.started', 'worker-t1'], ['worker.ended', 'worker-t1'], ['ticket.ended', 'master'],
+    ['reply.delivered', 'outbox'], ['reply.dropped', 'outbox']])
+  expect(lines(trace)[1]).toMatchObject({ kind: 'dispatch', ticket_id: 't1', decision_id: 'd1', strength: 'explicit', recall: false })
   expect(lines(trace).at(-1)).toMatchObject({ ticket_id: 't1', message_id: 'm1', message_kind: 'reply', channel_source: 'feishu',
     thread: 'feishu:oc_1:om_1', reason: 'channelIgnored' })
 })
@@ -74,6 +75,43 @@ it('projects worker Session model, tool, turn and error events outside the Sessi
   ])
 })
 
+it('records whether the main Session recalled facts before each dispatch', () => {
+  const trace = traceAt()
+  const handlers = new Map<string, (session: { id: string }, event: unknown) => void>()
+  trace.install({ on: (name: string, handler: (session: { id: string }, event: unknown) => void) => {
+    handlers.set(name, handler)
+    return () => {}
+  } } as never)
+  const session = (id: string) => (type: string, data: unknown, time: number) =>
+    handlers.get('session/event')!({ id }, { type, time, data })
+  const master = session('master')
+  const worker = session('worker-t1')
+  const t = Date.parse('2026-09-21T08:00:00Z')
+  let turn = 0
+  const tool = (name: string, callId: string, at: number) => master('tool/call', { turn, step: 1, callId, name, arguments: {} }, at)
+  const dispatch = (ticketId: string, callId: string, at: number) => {
+    tool('orchestrator_route', callId, at)
+    domain(trace, { type: 'ticket.created', at: new Date(at + 1).toISOString(), data: { ticketId, decisionId: 'd1', strength: 'explicit' } })
+    master('tool/result', { turn, step: 1, message: { toolCallId: callId } }, at + 2)
+  }
+  turn = 1
+  tool('recall_facts', 'r1', t)
+  dispatch('t1', 'c1', t + 10)
+  // The second dispatch reuses no new recall, and a worker's own recall does not count for the main Session.
+  dispatch('t2', 'c2', t + 20)
+  worker('tool/call', { turn: 1, step: 1, callId: 'w1', name: 'recall_facts', arguments: {} }, t + 25)
+  turn = 2
+  tool('recall_facts', 'r2', t + 30)
+  dispatch('t3', 'c3', t + 40)
+  // A proactive acceptance counts the same way.
+  tool('orchestrator_eval_decide', 'e1', t + 50)
+  domain(trace, { type: 'ticket.created', at: new Date(t + 51).toISOString(), data: { ticketId: 't4', decisionId: 'd2', strength: 'inferred' } })
+  master('tool/result', { turn, step: 1, message: { toolCallId: 'e1' } }, t + 52)
+  expect(lines(trace).filter(line => line.kind === 'dispatch').map(line => [line.ticket_id, line.recall])).toEqual([
+    ['t1', true], ['t2', false], ['t3', true], ['t4', false],
+  ])
+})
+
 it('reads a ticket timeline chronologically, skipping blank and malformed lines, and limits the newest events', () => {
   const trace = traceAt()
   for (const [ticket, at, kind] of [['t1', '2026-09-21T08:00:00Z', 'admission'], ['t2', '2026-09-21T08:01:00Z', 'admission'],
@@ -101,11 +139,15 @@ it('computes stage percentiles, ticket counts, tokens, and estimated model cost 
   trace.append('t2', 'worker-t1', 'model.call', { provider: 'other', model: 'unknown-model', input_tokens: 1_000_000,
     output_tokens: 1_000_000 }, at(90))
   trace.append('t3', 'master', 'admission', {}, at(120))
+  trace.append('t1', 'master', 'dispatch', { recall: true }, at(1))
+  trace.append('t2', 'master', 'dispatch', { recall: false }, at(61))
+  trace.append('t3', 'master', 'dispatch', { recall: false }, at(121))
   const metrics = trace.metrics()
   expect(metrics.tickets).toEqual({ total: 3, ended: 1, open: 2 })
   expect(metrics.stages.admission).toEqual({ samples: 2, p50_ms: 15_000, p95_ms: 19_500 })
   expect(metrics.stages.assignment).toEqual({ samples: 1, p50_ms: 10_000, p95_ms: 10_000 })
   expect(metrics.stages.total).toEqual({ samples: 1, p50_ms: 30_000, p95_ms: 30_000 })
+  expect(metrics.recall).toEqual({ dispatched: 3, used: 1, rate: 0.3333 })
   expect(metrics.tokens).toEqual({ input: 2_000_000, output: 1_500_000, total: 3_500_000 })
   expect(metrics.models).toEqual([
     // A model without an explicit price uses DEFAULT_MODEL_PRICE.

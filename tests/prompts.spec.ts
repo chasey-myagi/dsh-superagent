@@ -57,6 +57,13 @@ it('assembles every role from fixed sections around the team sections, whatever 
   expect(composePrompt(config, 'worker')).not.toContain(mainAdmissionPolicy)
 })
 
+it('tells the orchestrator to recall facts before dispatching and to skip memory when it is unavailable', () => {
+  const prompt = composePrompt(defaultPrompts(), 'orchestrator')
+  expect(prompt).toContain('Before dispatching work to a worker, call `recall_facts`')
+  expect(prompt).toContain('DSH_MEMORY_DISABLE')
+  expect(composePrompt(defaultPrompts(), 'worker')).not.toContain('Before dispatching work to a worker, call `recall_facts`')
+})
+
 it('reads a prompt file whatever its line ends and blank lines, and names a missing or empty one', () => {
   const dir = mkdtempSync(join(tmpdir(), 'prompt-file-'))
   // promptFile resolves paths relative to prompts/; use a relative path to reach the temp dir.

@@ -36,6 +36,11 @@ export interface TraceHost {
 interface PendingModel { at: number; provider?: string; model?: string; turn: number; step: number }
 interface PendingTool { at: number; name: string; turn: number; step: number }
 interface Lifecycle { started: number; admission?: number; workerStart?: number; ended?: number }
+interface DispatchCall { callId: string; recall: boolean }
+
+/** The memory tool the router calls before dispatching work, and the tools whose accept dispatches a ticket. */
+const RECALL_TOOL = 'recall_facts'
+const DISPATCH_TOOLS = new Set(['orchestrator_route', 'orchestrator_eval_decide'])
 
 const now = (): string => new Date().toISOString()
 /** ISO timestamp of a Session event time, tolerating malformed or out-of-range times instead of throwing inside a listener. */
@@ -98,6 +103,11 @@ export class Trace implements DeliveryTracer {
   private readonly pendingTools = new Map<string, PendingTool>()
   private readonly currentSteps = new Map<string, { turn: number; step: number }>()
   private readonly disposers: (() => void)[] = []
+  /** Time of the newest `recall_facts` call in the main Session, and of the newest dispatch call before the one in flight. */
+  private lastRecallAt: number | undefined
+  private lastDispatchAt = 0
+  /** The dispatch call in flight, with whether a recall call came after the previous dispatch call. */
+  private dispatchCall: DispatchCall | undefined
 
   constructor(private readonly host: TraceHost) {
     this.file = join(host.stateDir, 'trace', 'tickets.jsonl')
@@ -120,6 +130,28 @@ export class Trace implements DeliveryTracer {
     return () => { for (const dispose of this.disposers.splice(0)) dispose() }
   }
 
+  /**
+   * Track the main Session's memory and dispatching tool calls. A dispatch records a recall only when `recall_facts` was
+   * called after the previous dispatch call, so a batch accepted from one route call shares its single recall.
+   */
+  private mainSession(event: SessionEvent): void {
+    switch (event.type) {
+      case 'tool/call': {
+        if (event.data.name === RECALL_TOOL) this.lastRecallAt = event.time
+        else if (DISPATCH_TOOLS.has(event.data.name)) {
+          this.dispatchCall = { callId: event.data.callId, recall: this.lastRecallAt !== undefined && this.lastRecallAt > this.lastDispatchAt }
+          this.lastDispatchAt = event.time
+        }
+        break
+      }
+      case 'tool/result':
+        if (this.dispatchCall?.callId === event.data.message.toolCallId) this.dispatchCall = undefined
+        break
+      default:
+        break
+    }
+  }
+
   /** Append one trace record. Base fields cannot be overridden by `fields`. */
   append(ticketId: string, sessionId: string, kind: string, fields: Record<string, unknown> = {}, at?: string): void {
     const record = { ...fields, ts: stamp(at), ticket_id: ticketId, session_id: sessionId, kind }
@@ -136,6 +168,8 @@ export class Trace implements DeliveryTracer {
       case 'ticket.created':
         this.append(event.data.ticketId, this.host.sessionId, 'admission',
           { decision_id: event.data.decisionId, strength: event.data.strength }, event.at)
+        this.append(event.data.ticketId, this.host.sessionId, 'dispatch',
+          { decision_id: event.data.decisionId, strength: event.data.strength, recall: this.dispatchCall?.recall === true }, event.at)
         break
       case 'ticket.resumed':
         this.append(event.data.ticketId, this.host.sessionId, 'resume', { trigger_id: event.data.triggerId }, event.at)
@@ -167,8 +201,12 @@ export class Trace implements DeliveryTracer {
     } catch (error) { this.report(error) }
   }
 
-  /** Project one worker Session event. Events outside a worker Session are ignored. */
+  /** Project one worker Session event; the main Session's tool calls only decide the recall metric of dispatches. */
   private session(sessionId: string, event: SessionEvent): void {
+    if (sessionId === this.host.sessionId) {
+      this.mainSession(event)
+      return
+    }
     const ticketId = ticketOfSession(sessionId)
     if (!ticketId) return
     const at = timeStamp(event.time)
@@ -271,6 +309,7 @@ export class Trace implements DeliveryTracer {
     const assignmentDurations: number[] = []
     const models = new Map<string, { provider: string; model: string; calls: number; input: number; output: number }>()
     let input = 0, output = 0
+    const dispatches = new Set<string>(), recalledTickets = new Set<string>()
     const lifecycle = (ticketId: string): Lifecycle => {
       let value = lifecycles.get(ticketId)
       if (!value) { value = { started: Number.POSITIVE_INFINITY }; lifecycles.set(ticketId, value) }
@@ -299,6 +338,10 @@ export class Trace implements DeliveryTracer {
           }
           break
         }
+        case 'dispatch':
+          dispatches.add(event.ticket_id)
+          if (event.recall === true) recalledTickets.add(event.ticket_id)
+          break
         case 'ticket.ended': life.ended = Math.max(life.ended ?? time, time); break
         case 'model.call': {
           const provider = textOf(event.provider) ?? 'unknown'
@@ -337,6 +380,8 @@ export class Trace implements DeliveryTracer {
     return {
       tickets: { total: lifecycles.size, ended, open: lifecycles.size - ended },
       stages: { admission: stage(admissionDurations), assignment: stage(assignmentDurations), total: stage(totalDurations) },
+      recall: { dispatched: dispatches.size, used: recalledTickets.size,
+        rate: dispatches.size ? Math.round(recalledTickets.size / dispatches.size * 10_000) / 10_000 : 0 },
       tokens: { input, output, total: input + output },
       models: modelRows,
       pricing: { currency: 'USD', unit: 'per 1M tokens', default: DEFAULT_MODEL_PRICE, models: { ...MODEL_PRICES } },

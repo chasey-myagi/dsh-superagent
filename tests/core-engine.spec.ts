@@ -840,6 +840,17 @@ describe('worker reports', () => {
   })
 })
 describe('outcomes', () => {
+  it('records the end of an assignment the ticket end stops, before the ticket ends', () => {
+    const events: { type: string; data: Record<string, unknown> }[] = []
+    const h = harness({}, { emit: event => events.push(event) })
+    const ticketId = accepted(h).ticketId!
+    const assignmentId = h.repo.tickets.get(ticketId)!.assignments[0]!.id
+    h.engine.stopTicket(ticketId)
+    expect(events.filter(event => event.type === 'assignment.ended').map(event => event.data))
+      .toEqual([{ ticketId, assignmentId, reason: 'stopped' }])
+    expect(events.findIndex(event => event.type === 'assignment.ended'))
+      .toBeLessThan(events.findIndex(event => event.type === 'ticket.ended'))
+  })
   it('records how a ticket ended', () => {
     const h = harness()
     const ticketId = accepted(h).ticketId!
