@@ -3,7 +3,8 @@
 
 `status`, `start`, and `restart` exit 0 while the service runs normally; 1 when it is stopped, duplicated, unreachable, or
 reporting a runtime error, which `restart` may fix; 2 when it runs while a component such as a Source reports an error;
-and 3 when it runs and waits for setup. A restart fixes neither 2 nor 3: they need a person.
+and 3 when it runs and waits for setup, or when a `start` timed out while the service process was still running. A restart
+fixes neither 2 nor 3: they need a person or, for a service that was still starting, more time.
 """
 
 import argparse
@@ -25,6 +26,9 @@ ROOT = Path(__file__).resolve().parent.parent
 ARTIFACTS = ROOT / '.artifacts'
 CONTROL = ARTIFACTS / 'control'
 KEEP_LOGS = 20
+TAIL_LINES = 10
+DEFAULT_START_TIMEOUT = 180.0
+STILL_STARTING = 3
 
 
 def control(profile):
@@ -148,17 +152,65 @@ def stop(args, intentional=True):
     print('dsh-superagent stopped. Automatic recovery is paused until start/restart.' if intentional else 'dsh-superagent stopped.')
 
 
+def log_pattern(profile):
+    """Return the name pattern of log files written for `profile`."""
+    return re.compile(re.escape(f'dsh-superagent-{profile}-') + r'\d{8}-\d{6}-\d+\.log')
+
+
+def newest_log(profile):
+    """Return the most recently written log for `profile`, or None when it has none."""
+    try:
+        logs = [path for path in ARTIFACTS.iterdir() if log_pattern(profile).fullmatch(path.name)]
+        return max(logs, key=lambda path: path.stat().st_mtime, default=None)
+    except OSError:
+        return None
+
+
+def log_tail(path, count=TAIL_LINES):
+    """Return the last `count` lines of `path`, or an empty list when it cannot be read yet."""
+    try:
+        return path.read_text(errors='replace').splitlines()[-count:]
+    except OSError:
+        return []
+
+
 def prune_logs(profile):
     """Retain only the newest `KEEP_LOGS` log files for `profile`."""
-    name = re.compile(re.escape(f'dsh-superagent-{profile}-') + r'\d{8}-\d{6}-\d+\.log')
+    name = log_pattern(profile)
     logs = sorted((path for path in ARTIFACTS.iterdir() if name.fullmatch(path.name)), key=lambda path: path.stat().st_mtime)
     for path in logs[:-KEEP_LOGS]:
         path.unlink(missing_ok=True)
 
 
+def startup_timeout(args, log):
+    """Report a startup timeout, including the newest log's tail, and return 3 while the process runs or 1 when none is left."""
+    pids = processes(args.profile)
+    log = log or newest_log(args.profile)
+    lines = [f'Startup health check timed out after {args.timeout:g} s.']
+    if log is None:
+        lines.append('No log file was found for this profile.')
+    else:
+        lines.append('Log: ' + str(log))
+        tail = log_tail(log)
+        if tail:
+            lines.append(f'Last {len(tail)} log lines:')
+            lines.extend('  ' + line for line in tail)
+        else:
+            lines.append('The log is empty so far.')
+    if pids:
+        lines.append(f'The tmux pane process (PID {", ".join(map(str, pids))}) is still running: '
+                     'dsh-superagent is still starting and was left intact.')
+        print('\n'.join(lines), file=sys.stderr)
+        return STILL_STARTING
+    lines.append('No dsh-superagent process is running: startup failed.')
+    print('\n'.join(lines), file=sys.stderr)
+    return 1
+
+
 def start(args):
     session = 'dsh-' + args.profile
     pids = processes(args.profile)
+    log = None
     if len(pids) > 1:
         raise RuntimeError('Multiple dsh-superagent processes found; refusing to start another.')
     if not pids:
@@ -205,8 +257,7 @@ def start(args):
                 print(f'{name} reports an error, which a restart does not fix: {detail}')
             return code
         time.sleep(1)
-    status(args)
-    raise RuntimeError('Startup health check timed out; inspect the log. Any running process was left intact.')
+    return startup_timeout(args, log)
 
 
 def main():
@@ -216,14 +267,24 @@ def main():
                         help='DSH profile that loads dsh-superagent; its tmux session is dsh-<profile>.')
     parser.add_argument('--url', default=os.environ.get('DSH_SUPERAGENT_URL') or 'http://127.0.0.1:3082',
                         help='Health-check URL; override after changing the profile port.')
-    parser.add_argument('--timeout', type=float, default=60, help='Startup timeout in seconds.')
+    parser.add_argument('--timeout', type=float, default=None,
+                        help=f'Startup timeout in seconds; default {DEFAULT_START_TIMEOUT:g}, or DSH_SUPERAGENT_START_TIMEOUT.')
     parser.add_argument('--stop-timeout', type=float, default=300,
                         help='Graceful shutdown timeout in seconds; running Executor Sessions finish their step first.')
     parser.add_argument('--respect-stop', action='store_true',
                         help='For monitoring: never start/restart after an intentional stop.')
     args = parser.parse_args()
+    if args.timeout is None:
+        configured = os.environ.get('DSH_SUPERAGENT_START_TIMEOUT', '').strip()
+        if configured:
+            try:
+                args.timeout = float(configured)
+            except ValueError:
+                parser.error('DSH_SUPERAGENT_START_TIMEOUT must be a number of seconds')
+        else:
+            args.timeout = DEFAULT_START_TIMEOUT
     if args.timeout <= 0 or args.stop_timeout <= 0:
-        parser.error('--timeout and --stop-timeout must be positive')
+        parser.error('--timeout, DSH_SUPERAGENT_START_TIMEOUT and --stop-timeout must be positive')
     if not re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.-]*', args.profile):
         parser.error('--profile must be a DSH profile name')
     os.umask(0o077)

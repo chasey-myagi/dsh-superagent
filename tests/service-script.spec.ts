@@ -47,11 +47,14 @@ afterEach(() => {
   sleepers = []
   rmSync(root, { recursive: true, force: true })
 })
-function run(...args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
+function runWith(extra: Record<string, string>, ...args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise(resolve => execFile('python3', [join(root, 'scripts', 'dsh-superagent'), ...args],
-    { env: { ...process.env, PATH: `${join(root, 'bin')}:${process.env.PATH}`, DSH_SUPERAGENT_PROFILE: '', DSH_SUPERAGENT_URL: '' },
-      timeout: 20_000 },
+    { env: { ...process.env, PATH: `${join(root, 'bin')}:${process.env.PATH}`, DSH_SUPERAGENT_PROFILE: '', DSH_SUPERAGENT_URL: '',
+      DSH_SUPERAGENT_START_TIMEOUT: '', ...extra }, timeout: 20_000 },
     (error, stdout, stderr) => resolve({ code: typeof error?.code === 'number' ? error.code : 0, stdout, stderr })))
+}
+function run(...args: string[]) {
+  return runWith({}, ...args)
 }
 const READY = { health: { runtime: { state: 'ready', detail: '' } }, setup: { problem: null, feishuProblem: null } }
 /** Start a mock HTTP server that returns 503 until tmux launches the service (unless always is true). */
@@ -211,14 +214,50 @@ it('starts the service in a new window of the profile\'s tmux session when the s
   expect(calls.find(call => call[0] === 'new-window')).toEqual(expect.arrayContaining(['-t', '=dsh-superagent:']))
   expect(calls.some(call => call[0] === 'new-session')).toBe(false)
 }, 20_000)
-it('exits 1 when the started service does not answer in time, and leaves its process running', async () => {
+it('exits 3 while the process still runs when a start times out, prints the newest log tail, and leaves it running', async () => {
+  const pid = sleeper()
+  processes(service(pid))
+  mkdirSync(join(root, '.artifacts'), { recursive: true })
+  const log = join(root, '.artifacts', 'dsh-superagent-superagent-20260101-000000-1.log')
+  writeFileSync(log, Array.from({ length: 15 }, (_, index) => `line ${index}`).join('\n') + '\n')
+  const timedOut = await run('start', '--url', 'http://127.0.0.1:9', '--timeout', '1')
+  expect(timedOut).toMatchObject({ code: 3, stderr: expect.stringContaining('Startup health check timed out after 1 s') })
+  expect(timedOut.stderr).toContain(`Log: ${log}`)
+  // Only the last ten lines are printed, and the service is left running.
+  expect(timedOut.stderr).not.toContain('line 4')
+  expect(timedOut.stderr).toContain('line 5')
+  expect(timedOut.stderr).toContain('line 14')
+  expect(timedOut.stderr).toContain('still starting')
+  expect(() => process.kill(pid, 0)).not.toThrow()
+}, 20_000)
+it('prints the path of the log a freshly started service created, and still calls it starting while its pane process lives', async () => {
   const pid = sleeper()
   writeFileSync(join(root, 'pane'), `${pid}\n`)
   started(service(pid))
-  expect(await run('start', '--url', 'http://127.0.0.1:9', '--timeout', '2'))
-    .toMatchObject({ code: 1, stderr: expect.stringContaining('Startup health check timed out') })
-  expect(() => process.kill(pid, 0)).not.toThrow()
+  const timedOut = await run('start', '--url', 'http://127.0.0.1:9', '--timeout', '1')
+  expect(timedOut).toMatchObject({ code: 3, stderr: expect.stringContaining('still starting') })
+  const logs = readdirSync(join(root, '.artifacts')).filter(name => name.startsWith('dsh-superagent-superagent-'))
+  expect(logs).toHaveLength(1)
+  expect(timedOut.stderr).toContain(`Log: ${join(root, '.artifacts', logs[0]!)}`)
+  expect(timedOut.stderr).toContain('The log is empty so far.')
 }, 20_000)
+it('exits 1 when the started service is gone at the timeout', async () => {
+  writeFileSync(join(root, 'pane'), `${sleeper()}\n`)
+  const timedOut = await run('start', '--url', 'http://127.0.0.1:9', '--timeout', '1')
+  expect(timedOut).toMatchObject({ code: 1, stderr: expect.stringContaining('No dsh-superagent process is running') })
+}, 20_000)
+it('takes the startup timeout from DSH_SUPERAGENT_START_TIMEOUT', async () => {
+  processes(service(sleeper()))
+  const timedOut = await runWith({ DSH_SUPERAGENT_START_TIMEOUT: '1' }, 'start', '--url', 'http://127.0.0.1:9')
+  expect(timedOut).toMatchObject({ code: 3, stderr: expect.stringContaining('Startup health check timed out after 1 s') })
+}, 20_000)
+it('rejects a DSH_SUPERAGENT_START_TIMEOUT that is not a number', async () => {
+  expect(await runWith({ DSH_SUPERAGENT_START_TIMEOUT: 'soon' }, 'start'))
+    .toMatchObject({ code: 2, stderr: expect.stringContaining('DSH_SUPERAGENT_START_TIMEOUT must be a number of seconds') })
+})
+it('documents the default startup timeout', async () => {
+  expect(await run('--help')).toMatchObject({ code: 0, stdout: expect.stringContaining('default 180') })
+})
 it('does not signal a process that took the recorded service PID, and keeps a stop that timed out', async () => {
   mkdirSync(control('superagent'), { recursive: true })
   const other = sleeper()

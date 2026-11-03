@@ -104,7 +104,7 @@ scripts/dsh-superagent start
 scripts/dsh-superagent status
 ```
 
-`start` runs `dsh --profile superagent` in tmux session `dsh-superagent`, or `dsh-<profile>` for another profile. It waits up to one minute for the runtime to become ready or report a setup requirement. On a first run it prints the missing setup information. It refuses duplicate instances, including ones started outside this script.
+`start` runs `dsh --profile superagent` in tmux session `dsh-superagent`, or `dsh-<profile>` for another profile. It waits up to three minutes (180 seconds) for the runtime to become ready or report a setup requirement; set `--timeout` in seconds or `DSH_SUPERAGENT_START_TIMEOUT` to change that. On a first run it prints the missing setup information. It refuses duplicate instances, including ones started outside this script.
 
 `stop` and `restart` request graceful shutdown and wait up to five minutes for Executors. They never force-kill the process or touch other tmux sessions.
 
@@ -115,13 +115,13 @@ scripts/dsh-superagent status
 | Code | Meaning |
 | --- | --- |
 | 0 | The service runs normally |
-| 1 | It does not run, runs twice, does not answer, or its runtime reports an error; a restart may fix it |
+| 1 | It does not run, runs twice, does not answer, its runtime reports an error, or a `start` timed out with no service process left; a restart may fix it |
 | 2 | It runs, but a part other than the runtime, such as a Source or a Policy sync (`sync:<source id>`), reports an error; a restart does not fix it |
-| 3 | It runs and waits for setup; a restart does not fix it |
+| 3 | It runs and waits for setup, or a `start` timed out while the tmux pane process was still alive (the service may still be starting); a restart does not fix setup |
 
 A Source that is still starting counts as normal operation. So does a Feishu bot that setup could not check.
 
-`status` returns failed parts and their details under `errors`, and setup requirements under `setup`. `start` and `restart` print those problems as lines; they exit 1 if the service never comes up. Only an intentional `stop` pauses automatic recovery.
+`status` returns failed parts and their details under `errors`, and setup requirements under `setup`. `start` and `restart` print those problems as lines. A `start` exits 1 if the service never comes up, and 3 if the health check timed out while the tmux pane process was still alive. The timeout message prints the newest log's path and its last ten lines, and leaves any running process intact. Only an intentional `stop` pauses automatic recovery.
 
 Each profile stores logs and control files under `.artifacts/`:
 
@@ -135,7 +135,7 @@ Open the URL printed in the log, then choose **Superagent** in the sidebar.
 Create the hourly check in the DeepSeek Harness profile you normally use, not in `superagent`. It must keep running when the agent service is down. Ask an agent in that profile to create an hourly schedule using this prompt, with the checkout path filled in:
 
 ```text
-Check dsh-superagent: run `scripts/dsh-superagent --profile superagent status` in <checkout>. Exit 0: do nothing and say nothing. Exit 2: do not restart; tell me each part under `errors` with its detail, unless you already told me about the same ones. Exit 3: do not restart; tell me what `setup` says setup needs, unless you already told me. If it reports manually_stopped: true, leave it stopped. Otherwise (exit 1) run `scripts/dsh-superagent --profile superagent --respect-stop restart`, which exits the same way: 0 means it recovered, so say nothing; 2 and 3 are reported as above; if it exits 1 or fails otherwise, read the newest .artifacts/dsh-superagent-superagent-*.log and the Troubleshooting section of docs/006-deployment.md, fix what you can, and tell me what was wrong and what you did.
+Check dsh-superagent: run `scripts/dsh-superagent --profile superagent status` in <checkout>. Exit 0: do nothing and say nothing. Exit 2: do not restart; tell me each part under `errors` with its detail, unless you already told me about the same ones. Exit 3: do not restart; tell me what `setup` says setup needs, or that the service is still starting if `setup` is empty, unless you already told me. If it reports manually_stopped: true, leave it stopped. Otherwise (exit 1) run `scripts/dsh-superagent --profile superagent --respect-stop restart`, which exits the same way: 0 means it recovered, so say nothing; 2 and 3 are reported as above; if it exits 1 or fails otherwise, read the newest .artifacts/dsh-superagent-superagent-*.log and the Troubleshooting section of docs/006-deployment.md, fix what you can, and tell me what was wrong and what you did.
 ```
 
 `--respect-stop` preserves an intentional stop. Only `stop` writes the marker; `start` clears it. `restart` writes no marker, so the check can recover a restart whose shutdown timed out.
@@ -266,6 +266,7 @@ Setup problems appear on the overview with a link to the fix, in the panel's lan
 | `status` exits 2 | A part reports an error, which a restart does not fix: `errors` names each part, as listed under Management API, with its detail; each part clears its own entry once it works again |
 | `status` exits 3 | Setup waits: `setup` says what is missing, and the overview links to the setting that fixes it |
 | `status` exits 1 | The service does not run, runs twice, does not answer, or its runtime reports an error; the output and the newest log say which |
+| `start` exits 3 after a timeout | The tmux pane process is still running and may still be starting; read the printed log tail, wait, or raise `--timeout` or `DSH_SUPERAGENT_START_TIMEOUT` |
 | `… timed out after 90 s`, `… was stopped by …`, `… exited with code …` or `… could not run: …` | A CLI failed without printing why; run the named program by hand as the operator's user to see its own message |
 | The panel says dsh-superagent is not answering | It is restarting, or did not start because of its configuration; the DeepSeek Harness log names the cause |
 | `dsh-superagent configuration has keys it does not use` (log) | Remove the named keys; the message says where each value lives now |
