@@ -9,7 +9,7 @@ import type { Api, ApiResponse, RouteParams } from '../../src/app/api.ts'
 import { SKILL_NAME, SKILL_PREFIX, TEAM_SECTIONS, builtInBase, builtInPart, builtInParts, composePrompt, composeSkill, defaultPrompts,
   environmentSection, policySection, promptParts } from '../../src/app/prompts.ts'
 import type { DroppedReply, HistoryView, Problem, PromptsView, SetupView, SourceStatusRow, SourceView, StateView, ThreadPageView,
-  ThreadRow, TicketPageView,
+  ThreadRow, TicketPageView, TicketTimelineView, TraceMetricsView,
   TicketRow, TicketStage,
   TriggerRow } from '../../src/client/api.ts'
 import { SETUP_FIELDS } from '../../src/deployment.ts'
@@ -90,6 +90,7 @@ export interface PanelServer {
   settings: Settings; revisions: Record<string, number>
   prompts: PromptsView
   tickets: { open: TicketRow[]; ended: TicketRow[] }; ticketDetails: Record<string, TicketPageView>
+  timelines: Record<string, TicketTimelineView>; metrics: TraceMetricsView
   threads: ThreadRow[]
   threadPages: (key: string, query: { before?: string; around?: string }) => ThreadPageView | undefined
   person: TicketRow[]; search: Pick<ApiResponse<'GET search'>, 'items' | 'threads'>; history: HistoryView
@@ -257,6 +258,18 @@ function initial(): PanelServer {
       defaults: defaultPrompts(), parts: Object.entries(builtInParts()).map(([key, part]) => ({ key, ...part, base: builtInBase(part.text) })),
       defaultChanged: [], revisions: [{ ...defaults, changed: [] }], sessions: [], notificationPending: false, next_offset: null },
     tickets: { open: [ticketSummary()], ended: [ended] }, ticketDetails: { t1: ticketDetail() },
+    timelines: { t1: { ticketId: 't1', events: [
+      { ts: '2026-09-22T00:00:00Z', ticket_id: 't1', session_id: 'master', kind: 'admission', strength: 'explicit' },
+      { ts: '2026-09-22T00:01:00Z', ticket_id: 't1', session_id: 'worker-t1', kind: 'model.call', provider: 'deepseek',
+        model: 'demo', input_tokens: 10, output_tokens: 5, latency_ms: 42 },
+    ] } },
+    metrics: { tickets: { total: 2, ended: 1, open: 1 },
+      stages: { admission: { samples: 1, p50_ms: 1000, p95_ms: 1000 }, assignment: { samples: 1, p50_ms: 2000, p95_ms: 2000 },
+        total: { samples: 1, p50_ms: 5000, p95_ms: 5000 } },
+      tokens: { input: 10, output: 5, total: 15 },
+      models: [{ provider: 'deepseek', model: 'demo', calls: 1, input_tokens: 10, output_tokens: 5, estimated_cost_usd: 0.000005 }],
+      pricing: { currency: 'USD', unit: 'per 1M tokens', default: { input: 0.28, output: 0.42 },
+        models: { 'deepseek-chat': { input: 0.28, output: 0.42 } } } },
     threads: [threadSummary()], threadPages: threadPage,
     person: [ticketSummary({ attention: { id: 'q1', question: '需要确认按钮颜色' }, note: { text: '需要确认按钮颜色', error: false }, reply },
       { stage: 'person', action: 'answer' }),
@@ -327,6 +340,13 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
   'GET tickets': { query: ['state', 'offset', 'limit'], answer: ({ query }) => page(server.tickets[query.state === 'ended' ? 'ended'
     : 'open']) },
   'GET tickets/:id': { answer: ({ params }) => server.ticketDetails[params.id] ?? refuse(404, 'Ticket not found') },
+  'GET tickets/:id/timeline': { query: ['limit'], answer: ({ params, query }) => {
+    if (!ticketOf(params.id)) return refuse(404, 'Ticket not found')
+    const view = server.timelines[params.id] ?? { ticketId: params.id, events: [] }
+    const limit = query.limit === undefined ? 200 : Number(query.limit)
+    return { ...view, events: view.events.slice(-limit) }
+  } },
+  'GET metrics': { answer: () => server.metrics },
   'POST tickets/:id/retry': { answer: ({ params }) => {
     const ticket = ticketOf(params.id)
     if (!ticket) return refuse(404, 'Ticket not found')

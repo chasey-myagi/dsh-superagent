@@ -96,3 +96,24 @@ it('answers a prompt save that lost a race with 409, and a settings body over 12
     body: { error: `Request exceeds ${128 * 1024} bytes` } })
   expect(saves).toEqual([])
 })
+
+it('serves a ticket timeline and aggregate metrics, validating the limit and the ticket', async () => {
+  const seen: unknown[] = []
+  const metrics = { tickets: { total: 1, ended: 1, open: 0 },
+    stages: { admission: { samples: 1, p50_ms: 10, p95_ms: 10 }, assignment: { samples: 0, p50_ms: null, p95_ms: null },
+      total: { samples: 1, p50_ms: 20, p95_ms: 20 } }, tokens: { input: 3, output: 4, total: 7 }, models: [],
+    pricing: { currency: 'USD' as const, unit: 'per 1M tokens' as const, default: { input: 0.28, output: 0.42 }, models: {} } }
+  const call = serve({
+    store: { tickets: { get: (id: string) => id === 't1' ? {} : undefined } },
+    trace: {
+      timeline: (id: string, limit: number) => { seen.push([id, limit]); return { ticketId: id, events: [] } },
+      metrics: () => metrics,
+    },
+  })
+  expect(await call('GET', 'tickets/t1/timeline')).toEqual({ status: 200, body: { ticketId: 't1', events: [] } })
+  expect(await call('GET', 'tickets/t1/timeline?limit=5')).toEqual({ status: 200, body: { ticketId: 't1', events: [] } })
+  expect(seen).toEqual([['t1', 200], ['t1', 5]])
+  expect(await call('GET', 'tickets/missing/timeline')).toEqual({ status: 404, body: { error: 'Ticket not found' } })
+  for (const limit of ['0', '-1', '1001', 'x']) expect(await call('GET', `tickets/t1/timeline?limit=${limit}`)).toMatchObject({ status: 400 })
+  expect(await call('GET', 'metrics')).toEqual({ status: 200, body: metrics })
+})
