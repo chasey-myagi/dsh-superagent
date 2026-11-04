@@ -51,4 +51,11 @@
   - #18 文档变更已合（memory-explore [#12](https://github.com/chasey-myagi/memory-explore/pull/12)）；`/tmp/t18-stray.patch` 与之同内容，作废
 - **D17 metrics since**：根因是 `?since=...+08:00` 中 `+` 被 querystring 解成空格 → `bad since`。`parse_since` 恢复 `HH:MM` 偏移（memory-explore [#13](https://github.com/chasey-myagi/memory-explore/pull/13)）。前后：RAW `+08:00` 400 → 200，recall.count 与 `%2B08:00` 一致（96）。
 - **D16 recall 默认 limit**：server 默认 20→10（对齐插件）；eval **P@5 0.9125 / R@5 1.0 / MRR 1.0 不变**。真实查询 token-overlap 代理精度 limit20≈0.994 / limit10=1.0；满 20 条现象减少（默认召回 n=10）。同 PR #13。
-- **新发现**：isolation 测试首版用 dash `read -d` 失败时曾把 README 写成 `leak`（已 restore）；protect 脚本已改 bash。D16/D17 工单 #20/#21 与直合并入竞态，worker 可能重复劳动（已评论可停）。
+- **新发现**：isolation 测试首版用 dash `read -d` 失败时曾把 README 写成 `leak`（已 restore）；protect 脚本已改 bash。D16/D17 工单 #20/#21 与直合并入竞态 → 已由 **D22** 修复。
+- **D22 重复劳动 / 竞态工单自动 stop**（本轮主题）：
+  - **现状**：工单可经 `POST tickets/:id/stop` → `outcome=stopped`；绑定 PR 的工单可由 `github-pull` 在 merge 时 `threadClosed`。但 `land-me`/`ghpr` 直合、工单未绑定该 PR 时，同题 dogfood 工单会继续跑（#20 completed 白跑、#21 靠人工评论才 stop）。
+  - **方案**：`scripts/local/stop-duplicates` 拉 open 工单，按 `--issue` 或 `--title`（Jaccard≥0.4 / 共享 `D16`/`parse_since` 类 token）匹配后 stop + `gh-local comment`；`scripts/local/ghpr` 在 squash merge 成功后自动调用（失败只告警）。
+  - **落地**：fork [#18](https://github.com/chasey-myagi/dsh-superagent/pull/18)（`295d331`）；离线 `test-stop-duplicates.sh` PASS。
+  - **验证**：合并 #18 时脚本自动 stop 了实施工单 #22（`f91a9655` → stopped）。合成「已合 D16 + 仍 open #23」：dry-run 命中 → stop `dc30a2a0` → open_total=0；两主仓 `git status` 干净（isolation 仍在）。
+  - **竞态旧单**：#20 completed（对齐 main 后收尾）、#21/#22/#23 stopped。
+
