@@ -100,6 +100,21 @@ gh-local comment N "<文字>" ; gh-local show N ; gh-local list
 - 运营合并前先 `sh scripts/local/unlock-mains.sh`（`land-me` 已自动调用）。
 - 验证：`sh scripts/local/test-worktree-isolation.sh`。
 
+## 合并后 stop 同题竞态工单（D22）
+
+运营用 `land-me` 或 `ghpr ... merge` 合并后，另一张同主题 dogfood 工单可能还在跑。`scripts/local/stop-duplicates` 从管理 API 拉 open 工单，按 issue 号或标题匹配后 `POST tickets/<id>/stop`，并用 `gh-local comment <N>` 留一句“已由合并取代”。
+
+```sh
+scripts/local/stop-duplicates --title "D16: recall 默认 limit" --dry-run
+scripts/local/stop-duplicates --issue 20 21
+scripts/local/stop-duplicates --title "D17: parse_since ..." --reason "merged in #13"
+```
+
+- `--issue` 匹配工单 GitHub 线程的 issue 号（也兼容 API 的 `mandate` / `channels` 字段）；`--title` 去掉常见停用词后按 Jaccard ≥ 0.4，或共享代码型关键词（`D16`、`parse_since`）匹配。
+- `--dry-run` 只打印会 stop 的 id/title/issue，不发请求、不评论；`--base-url` 或 `DSH_ORCHESTRATOR_API` 可改 API 地址。
+- `ghpr` 在 squash merge 成功后自动跑 `stop-duplicates --title "<PR 标题>"`；`land-me` 走 `ghpr`，memory-explore 也覆盖。清理失败只告警，不影响已完成的合并。
+- 自测：`sh scripts/local/test-stop-duplicates.sh`（假 API + 假 gh-local，离线跑）。
+
 
 
 已跳过：`tests/sources.spec.ts` 中 Feishu "malformed line" 用例（error 健康态被 ready 覆盖的时序竞争，待上游修）。

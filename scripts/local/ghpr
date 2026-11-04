@@ -1,0 +1,30 @@
+#!/bin/sh
+# ghpr REPO HEAD TITLE BODY [merge] — open PR to main via API; optional squash merge
+# After a successful squash merge, stop same-topic dogfood tickets (D22).
+G(){ curl -s -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" "$@"; }
+stop_duplicates(){
+  [ -n "$1" ] || return 0
+  here=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+  for candidate in "${STOP_DUPLICATES:-}" "$(command -v stop-duplicates 2>/dev/null || true)" \
+                   "$HOME/.local/bin/stop-duplicates" \
+                   "$here/stop-duplicates" \
+                   /workspace/dsh-superagent-ws/dsh-superagent/scripts/local/stop-duplicates \
+                   /workspace/dsh-superagent/scripts/local/stop-duplicates; do
+    [ -n "$candidate" ] && [ -x "$candidate" ] || continue
+    "$candidate" --title "$1" --reason "PR $repo#$n 已合并" \
+      || echo "ghpr: stop-duplicates failed (merge already done)" >&2
+    return 0
+  done
+  echo "ghpr: stop-duplicates not found; skipped duplicate cleanup" >&2
+}
+repo=$1
+n=$(python3 -c 'import json,sys;print(json.dumps({"title":sys.argv[1],"head":sys.argv[2],"base":"main","body":sys.argv[3]}))' "$3" "$2" "$4" | G -X POST https://api.github.com/repos/$1/pulls -d @- | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get("number") or d)')
+echo "PR $n"
+[ "$5" = merge ] && {
+  sleep 4
+  response=$(G -X PUT https://api.github.com/repos/$1/pulls/$n/merge -d '{"merge_method":"squash"}')
+  echo "$response" | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get("merged"),d.get("sha") or d.get("message"))'
+  if echo "$response" | python3 -c 'import json,sys;d=json.load(sys.stdin);raise SystemExit(0 if d.get("merged") else 1)' 2>/dev/null; then
+    stop_duplicates "$3"
+  fi
+}
