@@ -93,4 +93,13 @@ gh-local comment N "<文字>" ; gh-local show N ; gh-local list
 设置：source:github `repository=local/dsh-superagent-ws`、`cli=~/.local/bin/gh-local`；policy 允许 `chasey-myagi`，规则 `dogfood-dev`；executor prepare =
 `sh scripts/local/prepare.sh`（按工单 target 在对应仓库建 `agent/<name>` worktree）。
 
+## Worktree isolation (D18)
+
+- `gh-local new` 只写目标名（如 `memory-explore`），**不再**把主仓绝对路径当成可写目标。
+- `scripts/local/prepare.sh` 建 worktree 后写入 `.superagent-worktree`，并对主仓跟踪文件 `chmod a-w`（`protect-mains.sh`）。
+- 运营合并前先 `sh scripts/local/unlock-mains.sh`（`land-me` 已自动调用）。
+- 验证：`sh scripts/local/test-worktree-isolation.sh`。
+
+
+
 已跳过：`tests/sources.spec.ts` 中 Feishu "malformed line" 用例（error 健康态被 ready 覆盖的时序竞争，待上游修）。

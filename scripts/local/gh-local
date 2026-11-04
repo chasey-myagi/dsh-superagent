@@ -82,7 +82,7 @@ def main(a):
         title, body = pos[0], (pos[1] if len(pos) > 1 else '')
         with Store() as d:
             n = d['next']; d['next'] += 1; t = now()
-            d['issues'][str(n)] = {'number': n, 'title': title, 'body': f'@{AGENT} {body}\n\n目标仓库：/workspace/dsh-superagent-ws/{target}',
+            d['issues'][str(n)] = {'number': n, 'title': title, 'body': f'@{AGENT} {body}\n\n目标仓库：{target}（只改工单 worktree / 当前 cwd；禁止写主仓 /workspace/dsh-superagent-ws/{target}）',
                 'state': 'open', 'user': OPERATOR, 'created_at': t, 'updated_at': t, 'comments': [], 'target': target}
         print(f'#{n} {html(n)}'); return
     if a[0] == 'comment':
