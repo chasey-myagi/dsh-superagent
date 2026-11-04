@@ -600,6 +600,8 @@ const TEXT = {
   'reason.policyChanged': ['评估期间策略已变更', 'Policy changed during the Eval'],
   'reason.noAdmissible': ['没有可准入的触发', 'No admissible Trigger'],
   'reason.startedTicket': ['已经开过工单 {ticket}', 'Already started Ticket {ticket}'],
+  'reason.duplicateTicket': ['与在跑工单 {ticket} 同题', 'Same topic as open Ticket {ticket}'],
+  'reason.duplicateMerged': ['与近期已合并的工单 {ticket} 同题', 'Same topic as recently merged Ticket {ticket}'],
   'reason.acceptedBefore': ['触发 {trigger} 之前已接单', 'Trigger {trigger} was accepted before'],
   'reason.routed': ['已转给工单 {ticket}', 'Routed to Ticket {ticket}'],
   'reason.stopUnknown': ['要停止的工单不存在或已结束', 'The Ticket to stop is unknown or ended'],

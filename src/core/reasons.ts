@@ -8,6 +8,8 @@ export const REASONS = {
   policyChanged: 'Policy changed during assessment',
   noAdmissible: 'No admissible trigger',
   startedTicket: 'Already started ticket {ticket}',
+  duplicateTicket: 'An open Ticket {ticket} already covers this',
+  duplicateMerged: 'Ticket {ticket} merged recently with the same work',
   acceptedBefore: 'Trigger {trigger} was accepted before',
   routed: 'Routed to ticket {ticket}',
   explicitRouted: 'Explicit request from an allowed sender routed by the orchestrator',

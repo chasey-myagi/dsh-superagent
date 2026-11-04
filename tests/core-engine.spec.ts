@@ -64,9 +64,9 @@ function harness(policyOverrides: Partial<Policy> = {}, { emit, prepareTicket }:
   return { repo, engine, outbox, withdrawn, requests, assessor, executor, delivered, settle, pump, read, decide,
     setVersion: (value: string) => { version = value }, setPaused: (value: boolean) => { paused = value }, tick: (seconds: number) => { clock += seconds } }
 }
-function accepted(h: ReturnType<typeof harness>, id = '1', thread = 't1') {
+function accepted(h: ReturnType<typeof harness>, id = '1', thread = 't1', title = 'Fix') {
   h.engine.receive(trigger(id, { threads: [{ source: 'chat', id: thread }] })); h.pump()
-  const decision = h.decide(h.requests.at(-1)!, { kind: 'accept', title: 'Fix', scope: 'small', reason: 'requested', acknowledgement: 'ok' })
+  const decision = h.decide(h.requests.at(-1)!, { kind: 'accept', title, scope: 'small', reason: 'requested', acknowledgement: 'ok' })
   h.settle()
   return decision
 }
@@ -181,6 +181,82 @@ describe('eval', () => {
     expect(h.repo.threads.get('chat:t1')).toMatchObject({ pending: [] })
     expect(h.repo.threads.get('chat:t1')).not.toHaveProperty('evaluating')
     expect(h.repo.threads.get('chat:t1')).not.toHaveProperty('expired')
+  })
+})
+describe('pre-dispatch dedupe', () => {
+  /** Accept `title` for a Trigger from a chat Thread, or from the GitHub issue when `issue` is given. */
+  function acceptTitle(h: ReturnType<typeof harness>, id: string, title: string,
+    { thread = 't1', issue, issueTitle }: { thread?: string; issue?: number; issueTitle?: string } = {}) {
+    const github = issue !== undefined
+    const channel: Trigger['channel'] = github
+      ? { source: 'github', thread: `github:${issue}`, address: { number: String(issue) } }
+      : { source: 'chat', thread, address: { message: id } }
+    h.engine.receive(trigger(id, { ...github ? { source: 'github', threads: [{ source: 'github', id: String(issue) }],
+      text: `${issueTitle ?? title}\n\nbody ${id}`, meta: { number: issue, isPr: false, kind: 'issue' } }
+    : { threads: [{ source: 'chat', id: thread }] }, channel }))
+    h.pump()
+    const decision = h.decide(h.requests.at(-1)!, { kind: 'accept', title, scope: 'small', reason: 'requested', acknowledgement: 'ok' })
+    h.settle()
+    return decision
+  }
+  function end(h: ReturnType<typeof harness>, ticketId: string, outcome: 'merged' | 'dropped') {
+    h.repo.tickets.save({ ...h.repo.tickets.get(ticketId)!, ended: { at: '2026-09-23T00:00:00.000Z', by: 'executor', outcome } })
+  }
+  const notices = (h: ReturnType<typeof harness>) => h.outbox.filter(message => message.kind === 'notice')
+
+  it('skips a second ticket for a topic an open ticket already works, before it starts a worker', () => {
+    const h = harness()
+    const first = accepted(h, '1', 't1', 'D16: recall 默认 limit')
+    const second = acceptTitle(h, '2', 'D16: recall 默认 limit', { thread: 't2' })
+    expect(second).toMatchObject({ kind: 'ignore', reason: [{ code: 'duplicateTicket', values: { ticket: first.ticketId } }] })
+    expect(h.repo.tickets.list()).toHaveLength(1)
+    expect(h.executor.start).toHaveBeenCalledTimes(1)
+    // The person is told why, instead of the acknowledgement an accepted ticket would send.
+    expect(notices(h)).toEqual([{ id: key('duplicate', second.evalId), channel: { source: 'chat', thread: 't2', address: { message: '2' } },
+      kind: 'notice', text: expect.stringContaining(`未派单：与在跑工单 ${first.ticketId}《D16: recall 默认 limit》同题（标题相近）`) }])
+    expect(h.outbox.filter(message => message.kind === 'acknowledgement')).toHaveLength(1)
+    expect(h.repo.triggers.disposition('2')?.decisionId).toBe(second.id)
+    expect(h.repo.threads.get('chat:t2')?.subscriptions).toEqual([])
+  })
+  it('skips a request for an issue an open ticket already works, whatever the new title says', () => {
+    const h = harness()
+    const first = acceptTitle(h, '1', 'D16: recall 默认 limit', { issue: 20 })
+    h.engine.receive(trigger('2', { source: 'github', threads: [{ source: 'github', id: 'release-9' }],
+      channel: { source: 'github', thread: 'github:20', address: { number: '20' } }, text: '召回解析的另一个 bug\n\nbody',
+      meta: { number: 20, isPr: false, kind: 'issue' } }))
+    h.pump()
+    const second = h.decide(h.requests.at(-1)!, { kind: 'accept', title: '召回解析的另一个 bug', scope: 'small', reason: 'requested' })
+    expect(second).toMatchObject({ kind: 'ignore', reason: [{ code: 'duplicateTicket', values: { ticket: first.ticketId } }] })
+    expect(h.repo.tickets.list()).toHaveLength(1)
+  })
+  it('compares the issue title of a new issue with an open ticket\'s title too', () => {
+    const h = harness()
+    const first = acceptTitle(h, '1', 'D16: recall 默认 limit', { issue: 20 })
+    const second = acceptTitle(h, '2', '修一下召回', { issue: 21, issueTitle: 'D16: recall 默认 limit（合成验证 stop-duplicates）' })
+    expect(second).toMatchObject({ kind: 'ignore', reason: [{ code: 'duplicateTicket', values: { ticket: first.ticketId } }] })
+  })
+  it('skips a topic that merged inside the window, naming the merged ticket', () => {
+    const h = harness()
+    const first = accepted(h, '1', 't1', 'D16: recall 默认 limit')
+    end(h, first.ticketId!, 'merged')
+    h.tick(2 * 24 * 60 * 60)
+    const second = acceptTitle(h, '2', 'D16: recall 默认 limit', { thread: 't2' })
+    expect(second).toMatchObject({ kind: 'ignore', reason: [{ code: 'duplicateMerged', values: { ticket: first.ticketId } }] })
+    expect(notices(h)[0]!.text).toContain(`与已合并工单 ${first.ticketId}《D16: recall 默认 limit》同题`)
+    expect(h.repo.tickets.list()).toHaveLength(1)
+  })
+  it('leaves work alone when a ticket merged before the window, or ended without merging', () => {
+    const h = harness()
+    const first = accepted(h, '1', 't1', 'D16: recall 默认 limit')
+    end(h, first.ticketId!, 'dropped')
+    const second = acceptTitle(h, '2', 'D16: recall 默认 limit', { thread: 't2' })
+    expect(second.kind).toBe('accept')
+    expect(h.repo.tickets.list()).toHaveLength(2)
+    // The same topic merged long ago, so it may be asked for again.
+    end(h, second.ticketId!, 'merged')
+    h.tick(8 * 24 * 60 * 60)
+    expect(acceptTitle(h, '3', 'D16: recall 默认 limit', { thread: 't3' }).kind).toBe('accept')
+    expect(h.repo.tickets.list()).toHaveLength(3)
   })
 })
 describe('subscription fan-out', () => {
