@@ -126,11 +126,11 @@ async function route(item: Record<string, unknown>): Promise<Record<string, unkn
   if (results[0]!.refused) throw new Error(String(results[0]!.refused))
   return results[0]!
 }
-async function acceptedTicket(trigger = feishu('1', '@bot 修一下回归')) {
+async function acceptedTicket(trigger = feishu('1', '@bot 修一下回归'), title = '修复回归') {
   await receive(trigger)
   expect(relays(runtime.masterId).some(item => item.trigger_id === trigger.id)).toBe(true)
-  const result = await route({ kind: 'accept', trigger_id: trigger.id, title: '修复回归',
-    worktree_name: worktreeName, acknowledgement: '收到，修复回归。' })
+  const result = await route({ kind: 'accept', trigger_id: trigger.id, title,
+    worktree_name: worktreeName, acknowledgement: `收到，${title}。` })
   const ticket = runtime.store.tickets.get((result.ticket as { ticket_id: string }).ticket_id)!
   return { trigger, ticket, sessionId: `worker-${ticket.id}` }
 }
@@ -566,7 +566,7 @@ it('projects read models for the management page and removes thread subscription
 
 it('lets an Executor drop only its own ticket from a thread it finds unrelated, but not the thread it started on or its pull request\'s', async () => {
   const { ticket, trigger, sessionId } = await acceptedTicket()
-  const other = await acceptedTicket(feishu('5', '@bot 另一件事'))
+  const other = await acceptedTicket(feishu('5', '@bot 另一件事'), '另一处修复')
   // An attached thread that turns out to be about something else, which another ticket also follows.
   const attached = { source: 'feishu', id: 'oc_side:om_side' }
   subscribe(ticket.id, attached); subscribe(other.ticket.id, attached)
@@ -804,7 +804,7 @@ it('leaves waiting and blocked assignments alone after a restart and keeps block
   runtime.executor.resume()
   expect(runtime.store.tickets.get(ticket.id)!.assignments).toHaveLength(1)
   expect(waitsForPerson(runtime.store.tickets.get(ticket.id)!)).toBe(true)
-  const other = await acceptedTicket(feishu('12', '@bot 另一个', { root_id: undefined }))
+  const other = await acceptedTicket(feishu('12', '@bot 另一个', { root_id: undefined }), '另一个问题')
   await runTool(other.sessionId, 'orchestrator_report', { state: 'progress', summary: 'midway' })
   runtime.executor.resume()
   expect(runtime.store.tickets.get(other.ticket.id)!.assignments.map(item => item.state)).toEqual(['ended', 'pending'])
@@ -1090,7 +1090,7 @@ it('runs the prepare command once for a new ticket, under the execution root wit
   expect(runs()).toHaveLength(1)
   answers['sh -c exit 3'] = new Error('Preparing worktree (new branch \'agent/x\')\nfatal: no such clone')
   prepare('exit 3')
-  const failed = await acceptedTicket(feishu('9', '@bot 修一下标题'))
+  const failed = await acceptedTicket(feishu('9', '@bot 修一下标题'), '标题修复')
   await runtime.idle()
   const report = runtime.store.tickets.get(failed.ticket.id)!.assignments.at(-1)!.report!
   expect(report).toMatchObject({ state: 'failed' })
@@ -1248,7 +1248,7 @@ it('resumes several ended tickets on one thread from one message without the lau
   const another = feishu('31', '@bot 另一件事', { root_id: 'om_1' })
   await receive(another)
   await runTool(first.sessionId, 'orchestrator_trigger_handback', { trigger_id: another.id, reason: 'Another change.' })
-  const second = await acceptedTicket(another)
+  const second = await acceptedTicket(another, '另一件事')
   for (const ticket of [first, second]) await runTool(ticket.sessionId, 'orchestrator_report', { state: 'dropped', summary: 'nothing to do' })
   await receive(feishu('32', '还有问题', { mentions: [], root_id: 'om_1', sender_id: 'ou_guest' }))
   await vi.waitFor(() => expect([first, second].map(ticket => runtime.store.tickets.get(ticket.ticket.id)!.ended)).toEqual([undefined, undefined]), { timeout: 3000 })
@@ -1485,7 +1485,7 @@ it('restarts a worker that was mid-work when the host stopped with the recovery 
 
 it('keeps the report of a blocked, failed or ready worker whose turn ends, and relays nothing more', async () => {
   for (const state of ['blocked', 'failed', 'ready'] as const) {
-    const { ticket, sessionId } = await acceptedTicket(feishu(String(20 + ['blocked', 'failed', 'ready'].indexOf(state)), `@bot 修 ${state}`, { root_id: undefined }))
+    const { ticket, sessionId } = await acceptedTicket(feishu(String(20 + ['blocked', 'failed', 'ready'].indexOf(state)), `@bot 修 ${state}`, { root_id: undefined }), `修复 ${state}`)
     await runTool(sessionId, 'orchestrator_report', { state, summary: `${state} report` })
     const relayed = relays(runtime.masterId).length
     const agent = agents.get(sessionId)! as { status: string }
@@ -1607,7 +1607,7 @@ it('runs a launch that fails for a passing reason again on the launch backoff th
       if (String(id).startsWith('worker-')) { tries++; throw error }
       return original(id)
     })
-    const { ticket } = await acceptedTicket(feishu(String(30 + index), `@bot 修 ${index}`, { root_id: undefined }))
+    const { ticket } = await acceptedTicket(feishu(String(30 + index), `@bot 修 ${index}`, { root_id: undefined }), index === 0 ? '重试 e503' : '重试 econn')
     await runtime.idle()
     let now = Date.now()
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -1642,16 +1642,16 @@ it('runs a launch that fails for a passing reason again on the launch backoff th
 it('launches a queued Assignment once when the host resumes, and gives a failed launch\'s slot back', async () => {
   runtime.store.saveSettings({ ...runtime.store.settings(), executor: { ...runtime.store.settings().executor, maxWorkers: 1, prepare: 'exit 3' } })
   answers['sh -c exit 3'] = new Error('fatal: no such clone')
-  const failed = await acceptedTicket(feishu('50', '@bot 修 一', { root_id: undefined }))
+  const failed = await acceptedTicket(feishu('50', '@bot 修 一', { root_id: undefined }), '首次尝试')
   await runtime.idle()
   expect(runtime.store.tickets.get(failed.ticket.id)!.assignments.at(-1)!.report).toMatchObject({ state: 'failed' })
   // The failed launch holds no slot: the next ticket launches in the only one.
   delete answers['sh -c exit 3']
-  const next = await acceptedTicket(feishu('51', '@bot 修 二', { root_id: undefined }))
+  const next = await acceptedTicket(feishu('51', '@bot 修 二', { root_id: undefined }), '第二次排队')
   await runtime.idle()
   expect(runtime.store.tickets.get(next.ticket.id)!.assignments.at(-1)).toMatchObject({ state: 'running' })
   // A third waits for the slot; resuming queues its launch again, which runs once the slot frees.
-  const queued = await acceptedTicket(feishu('52', '@bot 修 三', { root_id: undefined }))
+  const queued = await acceptedTicket(feishu('52', '@bot 修 三', { root_id: undefined }), '等待空位')
   await runtime.idle()
   expect(runtime.store.tickets.get(queued.ticket.id)!.assignments.at(-1)).toMatchObject({ state: 'pending' })
   runtime.executor.resume(); runtime.executor.resume()

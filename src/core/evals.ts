@@ -1,6 +1,7 @@
 /** Evals: the Thread-level assessments of queued Triggers, and the Decisions they end with. */
 import { key } from './ids.ts'
 import { UserError } from './errors.ts'
+import { candidateOf, duplicateNotice, findDuplicate, type DuplicateMatch } from './dedupe.ts'
 import { liveTicket, threadKey } from './model.ts'
 import type { Decision, DecisionKind, Evaluation, Mandate, MandateBasis, Strength, Thread, Trigger } from './model.ts'
 import type { AssessmentOutcome, Candidate, Policy } from './ports.ts'
@@ -305,6 +306,17 @@ export class Evals extends EnginePart {
   /** Record an accept with the Mandate the Eval gives, and have Tickets create its ticket. */
   private accept(thread: Thread, evaluation: Evaluation, outcome: Extract<AssessmentOutcome, { kind: 'accept' }>): Decision {
     const at = this.now()
+    // Same-topic work already has a worker, or merged a moment ago: skip before a ticket, an acknowledgement or a worktree exists.
+    const duplicate = this.duplicate(evaluation, outcome, at)
+    if (duplicate) {
+      const audit = { ...(outcome.audit ?? {}), duplicate: { ticketId: duplicate.ticket.id, title: duplicate.ticket.title,
+        state: duplicate.state, via: duplicate.via, ...duplicate.score === undefined ? {} : { score: duplicate.score } } }
+      const reason: Reason = { code: duplicate.state === 'open' ? 'duplicateTicket' : 'duplicateMerged',
+        values: { ticket: duplicate.ticket.id } }
+      const decision = this.finish(thread, evaluation, { kind: 'ignore', reason: [reason], audit })
+      this.notifyDuplicate(evaluation, duplicate)
+      return decision
+    }
     const basis = { ...evaluation.basis, ...(outcome.rules ? { rules: outcome.rules } : {}) }
     const { strength, policyVersion, actor } = evaluation
     const mandate: Mandate = { strength, policyVersion, basis, actor, scope: outcome.scope }
@@ -313,6 +325,23 @@ export class Evals extends EnginePart {
     const decision = this.finish(thread, evaluation, { kind: 'accept', reason: reasonOf(outcome.reason), ...audit, mandate, ticketId })
     this.tickets.create(ticketId, decision.id, mandate, evaluation, outcome, at)
     return decision
+  }
+  /** The open or recently merged Ticket the accepted request duplicates, if any. */
+  private duplicate(evaluation: Evaluation, outcome: Extract<AssessmentOutcome, { kind: 'accept' }>, at: string): DuplicateMatch | undefined {
+    const title = outcome.title.trim()
+    const primary = this.repo.triggers.get(evaluation.primary ?? evaluation.triggerIds.at(-1) ?? '')
+    const candidate = primary ? candidateOf(primary, title) : { titles: [title], issues: [] }
+    return findDuplicate(candidate, this.repo.tickets.list(), Date.parse(at))
+  }
+  /** Leave one comment on the source the skipped request came from, saying which ticket already covers it. */
+  private notifyDuplicate(evaluation: Evaluation, duplicate: DuplicateMatch): void {
+    const ids = evaluation.primary ? [evaluation.primary, ...evaluation.triggerIds.filter(id => id !== evaluation.primary)] : evaluation.triggerIds
+    for (const id of ids) {
+      const channel = this.repo.triggers.get(id)?.channel
+      if (!channel) continue
+      this.options.outbox.send({ id: key('duplicate', evaluation.id), channel, kind: 'notice', text: duplicateNotice(duplicate) })
+      return
+    }
   }
   /** Record an Eval's Decision; the Thread's own Eval ends with it, while a gate-only one leaves the Thread's Eval going. */
   private finish(thread: Thread, evaluation: Evaluation, outcome: Finished): Decision {
