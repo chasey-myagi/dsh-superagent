@@ -40,3 +40,15 @@
 - D16（open）：真实查询 heuristic 可返回多达 20 条事实，精度需再评估。
 - D17（open）：/v1/metrics?since=<ISO Z> 召回计数为 0，疑似 since 过滤 bug。
 - D18（open）：worker #18 改了主 checkout /workspace/memory-explore（不在自己的 worktree），导致 land 冲突；补丁存于 /tmp/t18-stray.patch。
+
+## Round 4 (2026-11-04)
+- **D18 worker 隔离（最高优先）**：根因是 `gh-local new` 把主仓绝对路径写成「目标仓库」，router routing note 再传给 worker，worker 按绝对路径改脏主仓。修复（fork [#16](https://github.com/chasey-myagi/dsh-superagent/pull/16)）：
+  - gh-local 改为 `目标仓库：{name}（只改 worktree；禁止写主仓 …）`
+  - prepare.sh 写入 `.superagent-worktree`，并对主仓跟踪文件 `chmod a-w`（protect/unlock helpers；land-me 自动 unlock）
+  - worker.md 明确只改 cwd
+  - `scripts/local/test-worktree-isolation.sh`：**PASS**（protect 后主仓 README 不可写）
+  - 验证工单 #19：worker 在 worktree 提交 `e56d513`，主仓 `git status` 保持干净；文档已合 memory-explore [#14](https://github.com/chasey-myagi/memory-explore/pull/14)
+  - #18 文档变更已合（memory-explore [#12](https://github.com/chasey-myagi/memory-explore/pull/12)）；`/tmp/t18-stray.patch` 与之同内容，作废
+- **D17 metrics since**：根因是 `?since=...+08:00` 中 `+` 被 querystring 解成空格 → `bad since`。`parse_since` 恢复 `HH:MM` 偏移（memory-explore [#13](https://github.com/chasey-myagi/memory-explore/pull/13)）。前后：RAW `+08:00` 400 → 200，recall.count 与 `%2B08:00` 一致（96）。
+- **D16 recall 默认 limit**：server 默认 20→10（对齐插件）；eval **P@5 0.9125 / R@5 1.0 / MRR 1.0 不变**。真实查询 token-overlap 代理精度 limit20≈0.994 / limit10=1.0；满 20 条现象减少（默认召回 n=10）。同 PR #13。
+- **新发现**：isolation 测试首版用 dash `read -d` 失败时曾把 README 写成 `leak`（已 restore）；protect 脚本已改 bash。D16/D17 工单 #20/#21 与直合并入竞态，worker 可能重复劳动（已评论可停）。
